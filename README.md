@@ -22,11 +22,7 @@ right: SeedVR2 ×4**, displayed at identical size:
 
 | Floating city | Backlit leaf |
 |---|---|
-| ![Comparison — city](docs/showcase-city.jpg) | ![Comparison — leaf](docs/showcase-leaf.jpg) |
-
-> 📷 To add a UI screenshot, save it as `docs/screenshot_ui.png` and embed it
-> here. To auto-compose a comparison from a real batch:
-> `python docs/make_showcase.py --input <input> --output <output>`.
+| ![Comparison — city](docs/showcase-city.png) | ![Comparison — leaf](docs/showcase-leaf.png) |
 
 ## Features
 
