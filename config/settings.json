@@ -1,0 +1,23 @@
+{
+  "input_dir": "",
+  "output_dir": "",
+  "model_choice": "",
+  "scale_choice": "x4",
+  "scale_custom": 3.0,
+  "output_format": "keep",
+  "quality": 95,
+  "add_suffix": false,
+  "suffix": "_upscaled",
+  "conflict_policy": "rename",
+  "tiling": false,
+  "tile_size": 512,
+  "tile_overlap": 64,
+  "seed": 666,
+  "precision": "auto",
+  "low_vram": true,
+  "clear_cache": true,
+  "parallel_io": true,
+  "resume": true,
+  "backend": "auto",
+  "language": "fr"
+}

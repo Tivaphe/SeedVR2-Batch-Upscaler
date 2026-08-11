@@ -1,0 +1,22 @@
+# --- Interface graphique ------------------------------------------------------
+gradio>=5.0,<6
+
+# --- Images -------------------------------------------------------------------
+Pillow>=10.0
+numpy>=1.24
+piexif>=1.1.3          # EXIF dans les PNG (optionnel mais recommandé)
+
+# --- Poids de modèles ----------------------------------------------------------
+safetensors>=0.4.3     # checkpoints FP16 / FP8 e4m3fn
+gguf>=0.13.0           # déquantisation GGUF (Q3_K_M … Q8_0, BF16)
+huggingface_hub>=0.24  # téléchargement des modèles et assets officiels
+
+# --- Utilitaires d'inférence (le dépôt officiel a ses propres requirements) ----
+einops>=0.7
+omegaconf>=2.3
+
+# --- torch / torchvision -------------------------------------------------------
+# Volontairement ABSENT d'ici : la build à installer dépend de votre pilote
+# NVIDIA et de votre version de Python. install.bat essaie, dans l'ordre :
+#   cu128 → cu124 → PyPI standard
+# ex. manuel : python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
