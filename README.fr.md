@@ -181,6 +181,14 @@ car le script officiel ne lit que des `.pth`.
   (PyTorch SDPA pour `flash_attn_varlen_func` — le dépôt ne l'utilise ni causal
   ni fenêtré ; `nn.LayerNorm`/`nn.RMSNorm` pour les `fusedln`/`fusedrms` de
   `configs_3b`). Si le vrai paquet est présent, il est utilisé tel quel.
+- **Quelle version de torch pour les modèles SeedVR2 ?** → Aucune en
+  particulier : les checkpoints (`.pth`/`.safetensors`/`.gguf`) sont de
+  simples tenseurs, indépendants de la build torch. Le dépôt officiel
+  épingle `torch==2.3.0` pour son environnement d'entraînement —
+  incompatible avec les Python modernes — donc l'application ignore cet
+  épingle et tourne sur torch récent (validé 2.10–2.13, builds CUDA
+  cu128/cu130 ; l'index cu128 s'arrête à 2.11). Seule une build CPU-only
+  (`+cpu`) ne peut pas faire tourner le pipeline.
 - **OOM malgré le mode faible VRAM** → laissez « Toujours découper en tuiles »
   activé et baissez la taille de tuile (256). Le moteur bascule aussi
   automatiquement en tuilage après un OOM.

@@ -175,6 +175,13 @@ GGUF), because the official script only reads `.pth` files.
   `flash_attn_varlen_func` — the repo never uses it causally or windowed;
   `nn.LayerNorm`/`nn.RMSNorm` for the `fusedln`/`fusedrms` of `configs_3b`).
   If the real package is present, it is used as-is.
+- **Which torch version do the SeedVR2 models need?** → None in particular:
+  checkpoints (`.pth`/`.safetensors`/`.gguf`) are plain tensors, independent
+  of the torch build. The official repo pins `torch==2.3.0` for its own
+  training environment — incompatible with modern Pythons — so this app
+  deliberately ignores that pin and runs on current torch (validated
+  2.10–2.13, CUDA cu128/cu130 builds; the cu128 index stops at 2.11).
+  Only a CPU-only build (`+cpu`) cannot run the pipeline.
 - **OOM despite low VRAM mode** → keep "Always use tiles" enabled and lower
   the tile size (256). The engine also switches to tiling automatically after
   an OOM.
