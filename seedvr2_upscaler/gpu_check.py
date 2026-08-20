@@ -19,9 +19,12 @@ from dataclasses import dataclass, field
 
 # Commande de (ré)installation recommandée, calquée sur install.bat :
 # on vise l'interpréteur du venv pour ne pas polluer le Python système.
+# Index cu130 : torch 2.9-2.13 (CUDA 13.0, pilote NVIDIA >= 580 requis sous
+# Windows, wheels Python 3.10 a 3.14). Pilote plus ancien ? Utilisez cu128
+# (torch <= 2.11, CUDA 12.8) : https://download.pytorch.org/whl/cu128
 TORCH_CUDA_INSTALL_CMD = (
     r".venv\Scripts\python.exe -m pip install torch torchvision "
-    "--index-url https://download.pytorch.org/whl/cu128"
+    "--index-url https://download.pytorch.org/whl/cu130"
 )
 
 
@@ -114,11 +117,17 @@ def _diagnose(status: GpuStatus) -> None:
     if status.cuda_build is None:
         status.problems.append(
             f"torch {status.torch_version} est une build CPU-only (torch.version.cuda = None) "
-            "— elle a probablement remplacé la build CUDA lors d'un pip install sans index CUDA."
+            "— elle a probablement remplacé la build CUDA lors d'un pip install sans index CUDA "
+            "(ou via le repli PyPI de install.bat : l'index cu128 ne publie plus de build "
+            "CUDA depuis torch 2.12)."
         )
         status.hints.append(
             "Remplacez-la par la build CUDA (écrase la build CPU) :\n"
             f"  {TORCH_CUDA_INSTALL_CMD}"
+        )
+        status.hints.append(
+            "Pilote NVIDIA antérieur au branch 580 ? Utilisez alors l'index cu128 "
+            "(torch <= 2.11, CUDA 12.8) : remplacez cu130 par cu128 dans la commande."
         )
         return
     if not status.cuda_available:

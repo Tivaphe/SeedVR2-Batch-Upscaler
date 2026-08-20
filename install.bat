@@ -28,11 +28,13 @@ python --version
 echo [2/6] Upgrading pip (venv-aware syntax)...
 python -m pip install --upgrade pip setuptools wheel
 
-echo [3/6] PyTorch (trying several CUDA indexes: cu128, cu124, then PyPI)...
-REM cu128 covers recent torch (Python 3.11-3.13+) ; cu124 for older ones ;
-REM plain PyPI wheels as a last resort.
-python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
-if errorlevel 1 python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+echo [3/6] PyTorch (trying several CUDA indexes: cu130, cu128, then PyPI)...
+REM cu130 = torch 2.9-2.13 (CUDA 13, needs NVIDIA driver >= 580 on Windows,
+REM wheels for Python 3.10-3.14+) ; cu128 = older torch (<= 2.11, CUDA 12.8,
+REM for older drivers) ; plain PyPI wheels as a last resort (CPU-only on
+REM Windows — SeedVR2 will refuse to start, see check_install.py).
+python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
+if errorlevel 1 python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 if errorlevel 1 python -m pip install torch torchvision
 if errorlevel 1 (
     echo [ERROR] No torch build matches your Python.

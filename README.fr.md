@@ -46,16 +46,19 @@ droite : SeedVR2 ×4**, affichés à taille identique :
 
 ```bat
 install.bat        :: crée .venv (Python 3.12/3.11 de préférence), installe torch CUDA
-                   :: (essaie les index cu128, cu124, puis PyPI), les dépendances,
+                   :: (essaie les index cu130, cu128, puis PyPI), les dépendances,
                    :: clone le dépôt officiel et vérifie l'installation
 run_app.bat        :: lance l'interface graphique (avec contrôles préalables)
 check_install.py   :: diagnostic complet (versions, CUDA, modèles, dépôt)
 ```
 
-> **Python 3.14** : les wheels CUDA de torch peuvent ne pas exister encore pour
-> votre index — c'est l'erreur `No matching distribution found for torch`.
-> Recréez alors l'environnement avec Python 3.12 : `py -3.12 -m venv .venv`
+> **Python 3.14** : des wheels CUDA existent sur l'index **cu130** (torch 2.9-2.13,
+> pilote ≥ 580). Si vous voyez `No matching distribution found for torch`,
+> l'index utilisé n'a pas de wheel pour votre Python — recréez alors
+> l'environnement avec Python 3.12 : `py -3.12 -m venv .venv`
 > (install.bat le privilégie automatiquement).
+> **Pilote NVIDIA ancien (< 580)** : utilisez plutôt l'index cu128
+> (torch ≤ 2.11, CUDA 12.8) — remplacez `cu130` par `cu128` dans les commandes.
 >
 > **apex** : le dépôt officiel requiert `apex`. Sous Windows sa compilation
 > échoue — c'est attendu et **non bloquant** : l'application injecte un repli
@@ -65,7 +68,7 @@ check_install.py   :: diagnostic complet (versions, CUDA, modèles, dépôt)
 
 ```powershell
 py -3.12 -m venv .venv ; .venv\Scripts\Activate.ps1
-python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
 python -m pip install -r requirements.txt mediapy
 git clone https://github.com/ByteDance-Seed/SeedVR.git SeedVR
 ```
@@ -166,9 +169,11 @@ car le script officiel ne lit que des `.pth`.
   il distingue les trois causes classiques et donne la réparation exacte —
   ① pilote NVIDIA muet (`nvidia-smi` en échec, souvent après une mise à jour
   Windows → réinstaller le pilote et **redémarrer**) ; ② torch remplacé par une
-  build **CPU-only** (pip sans index CUDA →
+  build **CPU-only** (pip sans index CUDA — nota : l'index cu128 ne publie plus
+  de build CUDA depuis torch 2.12, donc un `pip install torch` via PyPI donne
+  désormais une 2.12/2.13 CPU-only →
   `.venv\Scripts\python.exe -m pip install torch torchvision --index-url
-  https://download.pytorch.org/whl/cu128`) ; ③ pilote frais sans redémarrage ou
+  https://download.pytorch.org/whl/cu130`) ; ③ pilote frais sans redémarrage ou
   variable `CUDA_VISIBLE_DEVICES` mal réglée. L'interface affiche le même
   diagnostic dans son bandeau supérieur et dans le journal au démarrage d'un lot.
 - **FlashAttention / apex sous Windows** → inconstructibles depuis les sources ;
