@@ -17,7 +17,8 @@
   (repo `ByteDance-Seed/SeedVR`, cloned as `SeedVR/` next to `app.py`). It does
   **not** reimplement the pipeline. Only checkpoint *loading* is extended
   (safetensors FP16/FP8, GGUF), plus Windows compatibility shims.
-- **Stack**: Python 3.11–3.13 (3.12 safest), torch (CUDA builds, cu128 index),
+- **Stack**: Python 3.11–3.14 (3.12 safest), torch (CUDA builds, cu130 index;
+  cu128 fallback for pre-580 drivers — note cu128 stopped at torch 2.11),
   Gradio UI, threaded batch engine. Comments and user-facing logs are in
   **French**; the Gradio UI is bilingual FR/EN (hot-switch via `i18n.py`).
 - **Reference hardware** (validated): RTX 2000 Ada 16 GB, sm_89, bf16 OK,
@@ -138,8 +139,10 @@ auto-disabled when VRAM ≥ 14 GB, auto-enabled below 10 GB (`_tune_low_vram`).
 
 App venv (`requirements.txt` + install.bat): gradio, Pillow, numpy,
 safetensors, gguf, huggingface_hub, einops, omegaconf (+ optional piexif for
-EXIF-in-PNG). Plus torch/torchvision from the **cu128 index** (`pip install
-torch torchvision --index-url https://download.pytorch.org/whl/cu128`).
+EXIF-in-PNG). Plus torch/torchvision from the **cu130 index** (`pip install
+torch torchvision --index-url https://download.pytorch.org/whl/cu130`;
+Python 3.10-3.14 wheels, NVIDIA driver >= 580; cu128 stays as fallback for
+older drivers, torch <= 2.11).
 
 Official repo deps (curated, **not** its requirements.txt — it pins
 torch==2.3.0 which would break modern Pythons and downgrade CUDA torch):
@@ -166,9 +169,9 @@ If the real package exists, it is used untouched.
 1. **gradio never installs; pip dies with `InvalidMarker`** — requirements.txt
    comment lines started with `;` → parsed as environment markers. Fix:
    `#`-prefixed comments only.
-2. **`No matching distribution for torch` on cu124 index** — user's Python too
+2. **`No matching distribution for torch` on a CUDA index** — user's Python too
    new for that index's wheels. Fix: install.bat prefers `py -3.12`/`py -3.11`,
-   chain cu128 → cu124 → PyPI.
+   chain cu130 → cu128 → PyPI.
 3. **`ModuleNotFoundError: rotary_embedding_torch` at first load** — repo deps
    absent. Fix: curated unpinned install + runtime `_with_autorepair` (one
    auto pip attempt per module, then a clear error with the exact command).

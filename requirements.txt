@@ -18,5 +18,7 @@ omegaconf>=2.3
 # --- torch / torchvision -------------------------------------------------------
 # Volontairement ABSENT d'ici : la build à installer dépend de votre pilote
 # NVIDIA et de votre version de Python. install.bat essaie, dans l'ordre :
-#   cu128 → cu124 → PyPI standard
-# ex. manuel : python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+#   cu130 → cu128 → PyPI standard
+# (cu128 ne publie plus de build CUDA depuis torch 2.12 ; cu130 couvre
+#   torch 2.9-2.13, Python 3.10-3.14, pilote NVIDIA >= 580 sous Windows)
+# ex. manuel : python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130

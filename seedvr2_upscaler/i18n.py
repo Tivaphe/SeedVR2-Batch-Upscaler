@@ -43,10 +43,10 @@ STRINGS: dict[str, dict[str, str]] = {
                             "(nvidia.fr/drivers) puis REDÉMARREZ le PC."),
         "gpu.hint.torch_missing": "→ Installez la build CUDA : "
                                   r"`.venv\Scripts\python.exe -m pip install torch torchvision "
-                                  "--index-url https://download.pytorch.org/whl/cu128`",
+                                  "--index-url https://download.pytorch.org/whl/cu130`",
         "gpu.hint.cpu_build": "→ Remplacez-la par la build CUDA : "
                               r"`.venv\Scripts\python.exe -m pip install torch torchvision "
-                              "--index-url https://download.pytorch.org/whl/cu128`",
+                              "--index-url https://download.pytorch.org/whl/cu130`",
         "gpu.hint.cuda_false": ("→ Dans l'ordre : 1) redémarrez le PC ; "
                                 "2) vérifiez la variable CUDA_VISIBLE_DEVICES ; "
                                 "3) mettez à jour le pilote NVIDIA."),
@@ -170,10 +170,10 @@ STRINGS: dict[str, dict[str, str]] = {
                             "then RESTART the PC."),
         "gpu.hint.torch_missing": "→ Install the CUDA build: "
                                   r"`.venv\Scripts\python.exe -m pip install torch torchvision "
-                                  "--index-url https://download.pytorch.org/whl/cu128`",
+                                  "--index-url https://download.pytorch.org/whl/cu130`",
         "gpu.hint.cpu_build": "→ Replace it with the CUDA build: "
                               r"`.venv\Scripts\python.exe -m pip install torch torchvision "
-                              "--index-url https://download.pytorch.org/whl/cu128`",
+                              "--index-url https://download.pytorch.org/whl/cu130`",
         "gpu.hint.cuda_false": ("→ In order: 1) restart the PC; "
                                 "2) check the CUDA_VISIBLE_DEVICES variable; "
                                 "3) update the NVIDIA driver."),

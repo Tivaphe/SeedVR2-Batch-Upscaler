@@ -19,9 +19,11 @@
   à côté de `app.py`). Elle ne **réimplémente pas** le pipeline. Seul le
   *chargement* des poids est étendu (safetensors FP16/FP8, GGUF), plus des
   cales de compatibilité Windows.
-- **Stack** : Python 3.11–3.13 (3.12 le plus sûr), torch CUDA (index cu128),
-  interface Gradio, moteur de lot threadé. Commentaires et logs utilisateur en
-  **français** ; interface bilingue FR/EN (bascule à chaud via `i18n.py`).
+- **Stack** : Python 3.11–3.14 (3.12 le plus sûr), torch CUDA (index cu130 ;
+  repli cu128 pour les pilotes antérieurs au branch 580 — cu128 s'arrête à
+  torch 2.11), interface Gradio, moteur de lot threadé. Commentaires et logs
+  utilisateur en **français** ; interface bilingue FR/EN (bascule à chaud via
+  `i18n.py`).
 - **Matériel de référence** (validé) : RTX 2000 Ada 16 Go, sm_89, bf16 OK,
   Windows 11, 32 Go RAM. Pipeline complet fonctionnel (GGUF Q8_0, ×4, tuiles 288 px).
 - **Pas de mode CPU/démo, par conception** : sans GPU CUDA, l'application
@@ -145,8 +147,10 @@ désactivé automatiquement si VRAM ≥ 14 Go, activé sous 10 Go (`_tune_low_vr
 
 venv applicatif (`requirements.txt` + install.bat) : gradio, Pillow, numpy,
 safetensors, gguf, huggingface_hub, einops, omegaconf (+ piexif optionnel pour
-l'EXIF dans les PNG). Plus torch/torchvision depuis l'index **cu128**
-(`pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128`).
+l'EXIF dans les PNG). Plus torch/torchvision depuis l'index **cu130**
+(`pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130` ;
+wheels Python 3.10-3.14, pilote NVIDIA >= 580 ; cu128 reste en repli pour les
+pilotes plus anciens, torch <= 2.11).
 
 Dépendances du dépôt officiel (sélection curée, **pas** son requirements.txt
 qui épingle torch==2.3.0 — casserait les Python récents et rétrograderait le
@@ -174,9 +178,9 @@ loader, et `__path__=[]` pour les paquets, sinon `importlib`/`pkgutil` cassent
 1. **gradio ne s'installe jamais ; pip meurt avec `InvalidMarker`** — des
    commentaires de requirements.txt commençaient par `;` → interprétés comme
    marqueurs d'environnement. Correctif : commentaires préfixés `#` uniquement.
-2. **`No matching distribution for torch` sur l'index cu124** — Python trop
+2. **`No matching distribution for torch` sur un index CUDA** — Python trop
    récent pour les wheels de cet index. Correctif : install.bat préfère
-   `py -3.12`/`py -3.11`, chaîne cu128 → cu124 → PyPI.
+   `py -3.12`/`py -3.11`, chaîne cu130 → cu128 → PyPI.
 3. **`ModuleNotFoundError: rotary_embedding_torch` au premier chargement** —
    dépendances du dépôt absentes. Correctif : installation curée non épinglée
    + `_with_autorepair` à l'exécution (un essai pip auto par module, puis

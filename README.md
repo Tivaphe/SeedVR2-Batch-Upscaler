@@ -41,16 +41,19 @@ right: SeedVR2 ×4**, displayed at identical size:
 
 ```bat
 install.bat        :: creates .venv (preferring Python 3.12/3.11), installs CUDA torch
-                   :: (tries the cu128, cu124, then PyPI indexes), the dependencies,
+                   :: (tries the cu130, cu128, then PyPI indexes), the dependencies,
                    :: clones the official repo and checks the installation
 run_app.bat        :: starts the graphical interface (with pre-flight checks)
 check_install.py   :: full diagnostics (versions, CUDA, models, repository)
 ```
 
-> **Python 3.14**: prebuilt CUDA torch wheels may not exist for your index yet —
-> that's the `No matching distribution found for torch` error.
-> Recreate the environment with Python 3.12: `py -3.12 -m venv .venv`
-> (install.bat already prefers it automatically).
+> **Python 3.14**: CUDA wheels exist on the **cu130** index (torch 2.9-2.13,
+> driver ≥ 580). If you ever see `No matching distribution found for torch`,
+> the index in use has no wheel for your Python — recreate the environment
+> with Python 3.12: `py -3.12 -m venv .venv` (install.bat already prefers it
+> automatically).
+> **Older NVIDIA driver (< 580)**: use the cu128 index instead (torch ≤ 2.11,
+> CUDA 12.8) — replace `cu130` with `cu128` in the commands.
 >
 > **apex**: the official repo requires `apex`. On Windows its compilation fails —
 > that is expected and **non-blocking**: the application injects a numerically
@@ -60,7 +63,7 @@ Manual equivalent:
 
 ```powershell
 py -3.12 -m venv .venv ; .venv\Scripts\Activate.ps1
-python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
 python -m pip install -r requirements.txt mediapy
 git clone https://github.com/ByteDance-Seed/SeedVR.git SeedVR
 ```
@@ -160,9 +163,11 @@ GGUF), because the official script only reads `.pth` files.
   distinguishes the three classic causes and gives the exact repair — ① silent
   NVIDIA driver (`nvidia-smi` fails, often after a Windows update → reinstall
   the driver and **reboot**); ② torch replaced by a **CPU-only** build (pip
-  without the CUDA index →
+  without the CUDA index — note: the cu128 index stopped publishing CUDA
+  builds at torch 2.11, so `pip install torch` from PyPI now lands on a
+  CPU-only 2.12/2.13 →
   `.venv\Scripts\python.exe -m pip install torch torchvision --index-url
-  https://download.pytorch.org/whl/cu128`); ③ fresh driver without reboot or a
+  https://download.pytorch.org/whl/cu130`); ③ fresh driver without reboot or a
   misconfigured `CUDA_VISIBLE_DEVICES` variable. The interface shows the same
   diagnostic in its top banner and in the log when a batch starts.
 - **FlashAttention / apex on Windows** → cannot build from source; the app
@@ -170,6 +175,13 @@ GGUF), because the official script only reads `.pth` files.
   `flash_attn_varlen_func` — the repo never uses it causally or windowed;
   `nn.LayerNorm`/`nn.RMSNorm` for the `fusedln`/`fusedrms` of `configs_3b`).
   If the real package is present, it is used as-is.
+- **Which torch version do the SeedVR2 models need?** → None in particular:
+  checkpoints (`.pth`/`.safetensors`/`.gguf`) are plain tensors, independent
+  of the torch build. The official repo pins `torch==2.3.0` for its own
+  training environment — incompatible with modern Pythons — so this app
+  deliberately ignores that pin and runs on current torch (validated
+  2.10–2.13, CUDA cu128/cu130 builds; the cu128 index stops at 2.11).
+  Only a CPU-only build (`+cpu`) cannot run the pipeline.
 - **OOM despite low VRAM mode** → keep "Always use tiles" enabled and lower
   the tile size (256). The engine also switches to tiling automatically after
   an OOM.
