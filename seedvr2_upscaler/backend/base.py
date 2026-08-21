@@ -45,6 +45,11 @@ class BackendOptions:
     low_vram: bool = True        # offload du DiT vers le CPU entre deux passes
     clear_cache: bool = True     # torch.cuda.empty_cache() entre les images
     tiling: TilingConfig = TilingConfig()
+    # --- Réglages avancés natifs du pipeline officiel ---
+    cfg_scale: float = 1.0       # guidage diffusion (1.0 = officiel ; > 1 accentue le détail)
+    cfg_rescale: float = 0.0     # rescale du guidage (0.0 = valeur officielle)
+    cond_noise_scale: float = 0.0  # bruit de condition latent (0.0 = valeur officielle)
+    color_fix: bool = True       # active le wavelet color fix officiel si disponible
 
 
 class BackendUnavailable(RuntimeError):

@@ -145,6 +145,11 @@ class JobConfig:
     resume: bool = True                     # reprendre un lot interrompu
     tiling: TilingConfig = field(default_factory=TilingConfig)
     backend_name: str = "auto"              # "auto" | "official"
+    # --- Réglages avancés natifs du pipeline officiel (script inference_seedvr2_3b.py) ---
+    cfg_scale: float = 1.0                  # guidage diffusion (1.0 = officiel ; > 1 accentue)
+    cfg_rescale: float = 0.0                # rescale du guidage (0.0 = valeur officielle)
+    cond_noise_scale: float = 0.0           # bruit de condition latent (0.0 = valeur officielle)
+    color_fix: bool = True                  # wavelet color fix officiel (si dispo dans le dépôt)
 
 
 @dataclass

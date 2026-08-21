@@ -191,6 +191,10 @@ class BatchRunner:
             low_vram=job.low_vram,
             clear_cache=job.clear_cache,
             tiling=job.tiling,
+            cfg_scale=job.cfg_scale,
+            cfg_rescale=job.cfg_rescale,
+            cond_noise_scale=job.cond_noise_scale,
+            color_fix=job.color_fix,
         )
         models_dir = job.model.path.parent if job.model.path.name else DEFAULT_MODELS_DIR
         self._backend = self._backend_factory(job.backend_name, options, models_dir)

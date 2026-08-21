@@ -109,6 +109,17 @@ STRINGS: dict[str, dict[str, str]] = {
         "clear_cache.label": "Vider le cache GPU entre les images",
         "parallel_io.label": "Écritures disque en parallèle",
         "resume.label": "Reprendre un lot interrompu",
+        "expert.accordion": "🔬 Réglages avancés du modèle (netteté / détail — pipeline officiel)",
+        "expert.md": (
+            "**Paramètres natifs du pipeline officiel**, normalement figés aux valeurs "
+            "du script d'origine. À manier avec prudence : trop pousser le guidage ou "
+            "le bruit peut donner un rendu « sur-traité » (halos, aspect plastique) — "
+            "testez sur 1-2 images avant un gros lot."
+        ),
+        "cfg_scale.label": "Guidage (cfg_scale) — 1.0 = officiel, > 1 accentue le détail",
+        "cfg_rescale.label": "Rescale du guidage (cfg_rescale) — 0.0 = officiel",
+        "cond_noise_scale.label": "Bruit de condition — 0.0 = officiel, un peu plus ajoute de la texture",
+        "color_fix.label": "Correction couleur (wavelet color fix officiel)",
         # Boutons / statuts -------------------------------------------------------
         "btn.start": "▶️ Démarrer",
         "btn.pause": "⏸️ Pause",
@@ -235,6 +246,17 @@ STRINGS: dict[str, dict[str, str]] = {
         "clear_cache.label": "Clear GPU cache between images",
         "parallel_io.label": "Parallel disk writes",
         "resume.label": "Resume an interrupted batch",
+        "expert.accordion": "🔬 Advanced model settings (sharpness / detail — official pipeline)",
+        "expert.md": (
+            "**Native parameters of the official pipeline**, normally locked to the "
+            "original script's values. Use with care: pushing guidance or noise too "
+            "far can look \"over-processed\" (halos, plastic look) — test on 1-2 "
+            "images before a large batch."
+        ),
+        "cfg_scale.label": "Guidance (cfg_scale) — 1.0 = official, > 1 sharpens further",
+        "cfg_rescale.label": "Guidance rescale (cfg_rescale) — 0.0 = official",
+        "cond_noise_scale.label": "Condition noise — 0.0 = official, a bit more adds texture",
+        "color_fix.label": "Color correction (official wavelet color fix)",
         # Buttons / statuses -------------------------------------------------------
         "btn.start": "▶️ Start",
         "btn.pause": "⏸️ Pause",

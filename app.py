@@ -54,6 +54,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="N'efface pas le cache GPU entre les images.")
     parser.add_argument("--no-resume", action="store_true",
                         help="Ignore l'état de reprise d'un lot interrompu.")
+    parser.add_argument("--cfg-scale", type=float, default=1.0,
+                        help="Guidage diffusion (1.0 = officiel ; > 1 accentue le détail, "
+                             "risque d'artefacts au-delà de ~1.5-2.0).")
+    parser.add_argument("--cfg-rescale", type=float, default=0.0,
+                        help="Rescale du guidage cfg (0.0 = valeur officielle).")
+    parser.add_argument("--noise-scale", dest="cond_noise_scale", type=float, default=0.0,
+                        help="Bruit de condition latent (0.0 = valeur officielle ; "
+                             "une petite valeur ~0.02-0.05 peut réintroduire un peu de texture).")
+    parser.add_argument("--no-color-fix", action="store_true",
+                        help="Désactive le wavelet color fix officiel (actif par défaut).")
     parser.add_argument("--share", action="store_true",
                         help="Partage Gradio en réseau (mode interface uniquement).")
     return parser.parse_args(argv)
@@ -124,6 +134,10 @@ def _run_cli(args: argparse.Namespace) -> int:
         resume=not args.no_resume,
         tiling=TilingConfig(args.tiling, args.tile_size, args.tile_overlap),
         backend_name=args.backend,
+        cfg_scale=float(args.cfg_scale),
+        cfg_rescale=float(args.cfg_rescale),
+        cond_noise_scale=float(args.cond_noise_scale),
+        color_fix=not args.no_color_fix,
     )
 
     bus = EventBus()
