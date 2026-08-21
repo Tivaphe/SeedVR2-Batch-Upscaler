@@ -296,12 +296,19 @@ class SeedVR2OfficialBackend(UpscaleBackend):
             self._tune_vae_memory_limit(torch, log, runner)
             runner.vae.set_memory_limit(**runner.config.vae.memory_limit)
 
-        # ------------------ Diffusion (1 step, cfg=1) --------------- #
-        # Réglages identiques au script officiel (generation_loop).
-        runner.config.diffusion.cfg.scale = 1.0
-        runner.config.diffusion.cfg.rescale = 0.0
+        # ------------------ Diffusion (1 step, cfg réglable) --------------- #
+        # Le nombre de steps (1) reste figé : c'est le mode « turbo » distillé
+        # du script officiel (generation_loop) — le seul supporté par le
+        # checkpoint. cfg.scale/rescale sont en revanche de vrais réglages du
+        # pipeline officiel, exposés ici en options avancées (1.0/0.0 =
+        # comportement identique au script d'origine).
+        runner.config.diffusion.cfg.scale = float(self.options.cfg_scale)
+        runner.config.diffusion.cfg.rescale = float(self.options.cfg_rescale)
         runner.config.diffusion.timesteps.sampling.steps = 1
         runner.configure_diffusion()
+        if self.options.cfg_scale != 1.0 or self.options.cfg_rescale != 0.0:
+            log(f"Guidage (cfg) personnalisé : scale={self.options.cfg_scale}, "
+                f"rescale={self.options.cfg_rescale} (officiel : 1.0 / 0.0).")
 
         # ColorFix optionnel du script officiel (wavelet_reconstruction).
         self._load_color_fix(log)
@@ -542,6 +549,9 @@ class SeedVR2OfficialBackend(UpscaleBackend):
 
     def _load_color_fix(self, log: ProgressCb) -> None:
         """Wavelet color fix officiel si le fichier a été ajouté au dépôt."""
+        if not self.options.color_fix:
+            log("Color fix désactivé (option avancée).")
+            return
         color_fix_path = self.repo_root / "projects" / "video_diffusion_sr" / "color_fix.py"
         if not color_fix_path.exists():
             return
@@ -552,6 +562,7 @@ class SeedVR2OfficialBackend(UpscaleBackend):
             log("Color fix wavelet officiel activé.")
         except Exception as exc:
             log(f"Color fix indisponible ({exc}), il sera ignoré.")
+
 
     # ------------------------------------------------------------------ #
     # Inférence d'une région (image = vidéo d'une frame)                   #
@@ -664,10 +675,12 @@ class SeedVR2OfficialBackend(UpscaleBackend):
         return Image.fromarray(np.ascontiguousarray(array), "RGB")
 
     def _generation_step(self, cond_latents: list) -> "torch.Tensor":
-        """Réplique exacte de ``generation_step`` du script officiel.
+        """Réplique (avec bruit de condition réglable) de ``generation_step`` officiel.
 
-        SeedVR2 est « one-step » : un seul pas de diffusion avec cfg=1,
-        bruit de condition à t=0 (cond_noise_scale = 0.0).
+        SeedVR2 est « one-step » : un seul pas de diffusion avec cfg réglable.
+        Le script officiel fixe ``cond_noise_scale = 0.0`` ; c'est aussi la
+        valeur par défaut ici, mais l'option avancée permet de l'augmenter
+        légèrement (une petite valeur peut réintroduire un peu de texture).
         """
         import torch
 
@@ -679,7 +692,8 @@ class SeedVR2OfficialBackend(UpscaleBackend):
         noises = [n.to(device) for n in noises]
         aug_noises = [n.to(device) for n in aug_noises]
         cond_latents = [c.to(device) for c in cond_latents]
-        cond_noise_scale = 0.0  # valeur du script officiel
+        cond_noise_scale = float(self.options.cond_noise_scale)  # 0.0 = valeur officielle
+
 
         def _add_noise(x, aug_noise):
             t = torch.tensor([1000.0], device=device) * cond_noise_scale

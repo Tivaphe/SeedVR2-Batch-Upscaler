@@ -38,6 +38,11 @@ class Settings:
     resume: bool = True
     backend: str = "auto"             # auto | official
     language: str = "fr"              # langue de l'interface : fr | en
+    # --- Réglages avancés natifs du pipeline officiel ---
+    cfg_scale: float = 1.0            # guidage diffusion (1.0 = officiel ; > 1 accentue)
+    cfg_rescale: float = 0.0          # rescale du guidage (0.0 = valeur officielle)
+    cond_noise_scale: float = 0.0     # bruit de condition latent (0.0 = valeur officielle)
+    color_fix: bool = True            # wavelet color fix officiel (si dispo dans le dépôt)
 
     # ------------------------------------------------------------------ #
     # Les radios de l'UI travaillent en valeurs canoniques (indépendantes
@@ -66,6 +71,11 @@ class Settings:
             self.backend = "auto"
         if self.language not in {"fr", "en"}:
             self.language = "fr"
+        # Garde-fous des réglages avancés (bornes larges mais sûres — un
+        # settings.json corrompu/édité à la main ne doit jamais planter l'appli).
+        self.cfg_scale = min(4.0, max(0.5, float(self.cfg_scale)))
+        self.cfg_rescale = min(1.0, max(0.0, float(self.cfg_rescale)))
+        self.cond_noise_scale = min(1.0, max(0.0, float(self.cond_noise_scale)))
         # Migration des anciens libellés FR + garde-fous de validité.
         for attr, table in self._MIGRATIONS.items():
             value = getattr(self, attr)
@@ -73,6 +83,7 @@ class Settings:
                 setattr(self, attr, table[value])
             if getattr(self, attr) not in self._VALID[attr]:
                 setattr(self, attr, self._DEFAULTS[attr])
+
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=2, ensure_ascii=False)

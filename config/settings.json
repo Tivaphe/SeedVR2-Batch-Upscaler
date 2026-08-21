@@ -19,5 +19,9 @@
   "parallel_io": true,
   "resume": true,
   "backend": "auto",
-  "language": "fr"
+  "language": "fr",
+  "cfg_scale": 1.0,
+  "cfg_rescale": 0.0,
+  "cond_noise_scale": 0.0,
+  "color_fix": true
 }

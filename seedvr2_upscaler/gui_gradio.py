@@ -323,6 +323,25 @@ def build_app(models_dir: Path | None = None,
                                          label=tr(lang, "resume.label")),
                              label=("s", "resume.label"))
 
+            with reg(gr.Accordion(tr(lang, "expert.accordion"), open=False),
+                     label=("s", "expert.accordion")):
+                reg(gr.Markdown(tr(lang, "expert.md")), value=("s", "expert.md"))
+                with gr.Row():
+                    cfg_scale = reg(gr.Slider(0.5, 3.0, value=s.cfg_scale, step=0.05,
+                                              label=tr(lang, "cfg_scale.label")),
+                                    label=("s", "cfg_scale.label"))
+                    cfg_rescale = reg(gr.Slider(0.0, 1.0, value=s.cfg_rescale, step=0.05,
+                                                label=tr(lang, "cfg_rescale.label")),
+                                      label=("s", "cfg_rescale.label"))
+                with gr.Row():
+                    cond_noise_scale = reg(
+                        gr.Slider(0.0, 0.5, value=s.cond_noise_scale, step=0.01,
+                                 label=tr(lang, "cond_noise_scale.label")),
+                        label=("s", "cond_noise_scale.label"))
+                    color_fix = reg(gr.Checkbox(value=s.color_fix,
+                                                label=tr(lang, "color_fix.label")),
+                                    label=("s", "color_fix.label"))
+
         # ------------------------------------------------------------ boutons
         with gr.Row():
             start_btn = reg(gr.Button(tr(lang, "btn.start"), variant="primary",
@@ -371,7 +390,8 @@ def build_app(models_dir: Path | None = None,
         setting_inputs = [input_dir, output_dir, model_dropdown, scale_choice,
                           scale_custom, output_format, quality, add_suffix, suffix,
                           conflict, tiling, tile_size, tile_overlap, seed, precision,
-                          low_vram, clear_cache, parallel_io, resume, backend]
+                          low_vram, clear_cache, parallel_io, resume, backend,
+                          cfg_scale, cfg_rescale, cond_noise_scale, color_fix]
         for component in setting_inputs:
             component.change(_persist_settings, inputs=setting_inputs)
 
@@ -497,7 +517,8 @@ def _persist_settings(*values: Any) -> None:
     keys = ["input_dir", "output_dir", "model_choice", "scale_choice", "scale_custom",
             "output_format", "quality", "add_suffix", "suffix", "conflict_policy",
             "tiling", "tile_size", "tile_overlap", "seed", "precision", "low_vram",
-            "clear_cache", "parallel_io", "resume", "backend"]
+            "clear_cache", "parallel_io", "resume", "backend",
+            "cfg_scale", "cfg_rescale", "cond_noise_scale", "color_fix"]
     data = dict(zip(keys, values))
     # model_choice contient l'étiquette ; on ne garde que le nom du fichier.
     label = data["model_choice"] or ""
@@ -515,7 +536,8 @@ def _on_start(session: GuiSession, *values: Any) -> object:  # noqa: C901
     _persist_settings(*values)
     (inp, out, model_label, scale_choice, scale_custom, out_fmt, quality,
      add_suffix, suffix, conflict, tiling, tile_size, tile_overlap, seed,
-     precision, low_vram, clear_cache, parallel_io, resume, backend_choice) = values
+     precision, low_vram, clear_cache, parallel_io, resume, backend_choice,
+     cfg_scale, cfg_rescale, cond_noise_scale, color_fix) = values
     lang = session.language
 
     if session.busy:
@@ -562,6 +584,10 @@ def _on_start(session: GuiSession, *values: Any) -> object:  # noqa: C901
         tiling=TilingConfig(enabled=bool(tiling), tile_size=int(tile_size),
                             overlap=int(tile_overlap)),
         backend_name=backend_name,
+        cfg_scale=float(cfg_scale),
+        cfg_rescale=float(cfg_rescale),
+        cond_noise_scale=float(cond_noise_scale),
+        color_fix=bool(color_fix),
     )
 
     session.bus = EventBus()
