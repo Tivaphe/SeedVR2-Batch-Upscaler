@@ -23,6 +23,11 @@ du dossier de sortie, bandeau GPU.
 from __future__ import annotations
 
 import threading
+import dataclasses
+import json
+import tempfile
+import shutil
+import uuid
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -44,6 +49,14 @@ from .models import (
 from .registry import download_file, scan_models
 from .settings import Settings, load_settings, save_settings
 from .worker import BatchRunner, EventBus, _fmt_duration
+from .jobs import preflight, scan_inputs, atomic_json
+
+SETTING_KEYS = ["input_dir", "output_dir", "model_choice", "scale_choice", "scale_custom",
+            "output_format", "quality", "add_suffix", "suffix", "conflict_policy",
+            "tiling", "tile_size", "tile_overlap", "seed", "precision", "low_vram",
+            "clear_cache", "parallel_io", "resume", "backend",
+            "cfg_scale", "cfg_rescale", "cond_noise_scale", "color_fix",
+            "recursive", "memory_profile", "retry_failed"]
 
 _LOG_MAX_LINES = 600
 
@@ -78,6 +91,10 @@ class GuiSession:
         self.state: RunnerState = RunnerState.IDLE
         self.preview: tuple[Any, Any] | None = None
         self.models_by_label: dict[str, ModelInfo] = {}
+        self.pending_jobs: deque[JobConfig] = deque()
+        self.latest_result: dict | None = None
+        self.lock = threading.RLock()
+        self.upload_folder: str | None = None
         # (composant, {prop: spec}) — spec = (« s », clé) | (« choices », …) | (« f », nom)
         self.text_registry: list[tuple[Any, dict[str, tuple[str, Any]]]] = []
         self.refresh_models()
@@ -91,6 +108,8 @@ class GuiSession:
 
     @property
     def busy(self) -> bool:
+        if self.runner is not None and self.runner.is_alive:
+            return True
         return self.state in {
             RunnerState.LOADING, RunnerState.RUNNING,
             RunnerState.PAUSED, RunnerState.CANCELLING,
@@ -201,7 +220,7 @@ def build_app(models_dir: Path | None = None,
                 reg(gr.Markdown(tr(lang, "app.title")), value=("s", "app.title"))
             with gr.Column(scale=1, min_width=170):
                 language = reg(gr.Dropdown(
-                    choices=list(SUPPORTED_LANGUAGES.items()),
+                    choices=[(label, code) for code, label in SUPPORTED_LANGUAGES.items()],
                     value=session.language, label=tr(lang, "lang.label"),
                     interactive=True,
                 ), label=("s", "lang.label"))
@@ -342,6 +361,35 @@ def build_app(models_dir: Path | None = None,
                                                 label=tr(lang, "color_fix.label")),
                                     label=("s", "color_fix.label"))
 
+        with gr.Accordion("Lots et mémoire / Batches & memory", open=False):
+            recursive = gr.Checkbox(value=s.recursive, label="Inclure les sous-dossiers / Recursive")
+            memory_profile = gr.Dropdown(choices=[("Automatique / Auto", "auto"),
+                ("Économe / Low memory", "eco"), ("Équilibré / Balanced", "balanced"),
+                ("Rapide, plus de VRAM / Fast", "fast")], value=s.memory_profile,
+                label="Profil mémoire / Memory profile")
+            retry_failed = gr.Checkbox(value=False, label="Uniquement les erreurs précédentes / Retry failed only")
+            with gr.Row():
+                check_btn = gr.Button("Vérifier le lot / Check batch")
+                enqueue_btn = gr.Button("Ajouter à la file / Enqueue")
+                queue_start = gr.Button("Lancer la file / Run queue")
+                queue_clear = gr.Button("Vider la file / Clear queue")
+            queue_status = gr.Textbox(label="File d'attente / Queue", interactive=False)
+            check_status = gr.Textbox(label="Vérification / Preflight", interactive=False)
+        with gr.Accordion("Préréglages / Presets", open=False):
+            export_btn = gr.Button("Exporter les réglages / Export settings")
+            export_file = gr.File(label="Préréglage exporté / Exported preset", interactive=False)
+            import_file = gr.File(label="Importer un préréglage JSON / Import JSON preset", file_types=[".json"], type="filepath")
+        with gr.Accordion("Essai sur une zone / Crop test", open=False):
+            gr.Markdown("Vérifiez le lot pour choisir une image. Le crop peut différer du rendu complet. "
+                        "Sorties isolées dans `.seedvr2_tests`. / Check batch to select an image; crop context differs.")
+            test_source = gr.Dropdown(label="Image de test / Test image", choices=[])
+            with gr.Row():
+                crop_x = gr.Number(value=0, minimum=0, precision=0, label="X")
+                crop_y = gr.Number(value=0, minimum=0, precision=0, label="Y")
+                crop_w = gr.Number(value=256, minimum=1, precision=0, label="Largeur / Width")
+                crop_h = gr.Number(value=256, minimum=1, precision=0, label="Hauteur / Height")
+            test_btn = gr.Button("Tester cette zone / Test crop")
+
         # ------------------------------------------------------------ boutons
         with gr.Row():
             start_btn = reg(gr.Button(tr(lang, "btn.start"), variant="primary",
@@ -375,6 +423,20 @@ def build_app(models_dir: Path | None = None,
                 preview = gr.Image(label=tr(lang, "preview.before"), type="pil")
                 gr.Image(label=tr(lang, "preview.after"), type="pil")
 
+        with gr.Accordion("Inspection synchronisée 100 % / Pixel inspection", open=False):
+            gr.Markdown("Coordonnées dans la sortie, zone 512 × 512. À 1× : un pixel image par pixel CSS. "
+                        "/ Output coordinates; 1× shows one image pixel per CSS pixel.")
+            with gr.Row():
+                inspect_x = gr.Number(value=0, minimum=0, precision=0, label="X sortie / Output X")
+                inspect_y = gr.Number(value=0, minimum=0, precision=0, label="Y sortie / Output Y")
+                inspect_zoom = gr.Dropdown(choices=[1, 2, 4], value=1, label="Zoom")
+                inspect_btn = gr.Button("Inspecter le dernier résultat / Inspect last result")
+            inspection = gr.ImageSlider(type="pil", format="png", width=512, height=512,
+                                        max_height=512, slider_position=50, interactive=False)
+        with gr.Accordion("Historique / History", open=False):
+            history_btn = gr.Button("Actualiser l'historique / Refresh history")
+            history_view = gr.JSON(label="20 derniers lots / Last 20 batches")
+
         journal = reg(gr.Textbox(label=tr(lang, "journal.label"), lines=14,
                                  max_lines=14, interactive=False, autoscroll=True,
                                  elem_id="journal"),
@@ -391,11 +453,12 @@ def build_app(models_dir: Path | None = None,
                           scale_custom, output_format, quality, add_suffix, suffix,
                           conflict, tiling, tile_size, tile_overlap, seed, precision,
                           low_vram, clear_cache, parallel_io, resume, backend,
-                          cfg_scale, cfg_rescale, cond_noise_scale, color_fix]
+                          cfg_scale, cfg_rescale, cond_noise_scale, color_fix,
+                          recursive, memory_profile, retry_failed]
         for component in setting_inputs:
             component.change(_persist_settings, inputs=setting_inputs)
 
-        drop.upload(lambda files: _on_drop(session, files), inputs=drop,
+        drop.change(lambda files: _on_drop(session, files), inputs=drop,
                     outputs=input_dir)
         refresh_btn.click(lambda: _on_refresh(session), outputs=model_dropdown)
         download_btn.click(lambda p: _on_download(session, p), inputs=preset,
@@ -408,6 +471,20 @@ def build_app(models_dir: Path | None = None,
         pause_btn.click(lambda: _safe_call(session, "pause"))
         resume_btn.click(lambda: _safe_call(session, "resume"))
         cancel_btn.click(lambda: _safe_call(session, "cancel"))
+
+        check_btn.click(lambda *v: _check_job(session, *v), inputs=setting_inputs,
+                        outputs=[check_status, test_source])
+        enqueue_btn.click(lambda *v: _enqueue_job(session, *v), inputs=setting_inputs, outputs=queue_status)
+        queue_start.click(lambda: _start_queue(session), outputs=queue_status)
+        queue_clear.click(lambda: _clear_queue(session), outputs=queue_status)
+        timer.tick(lambda: _queue_text(session), outputs=queue_status)
+        export_btn.click(_export_preset, inputs=setting_inputs, outputs=export_file)
+        import_file.upload(lambda f: _import_preset(session, f), inputs=import_file, outputs=setting_inputs)
+        test_btn.click(lambda source, x, y, w, h, *v: _test_crop(session, source, x, y, w, h, *v),
+                       inputs=[test_source, crop_x, crop_y, crop_w, crop_h] + setting_inputs, outputs=status)
+        inspect_btn.click(lambda x, y, z: _inspect_result(session, x, y, z),
+                          inputs=[inspect_x, inspect_y, inspect_zoom], outputs=inspection)
+        history_btn.click(_history, inputs=output_dir, outputs=history_view)
 
         # Bascule de langue à chaud sur TOUT le registre enregistré ci-dessus.
         language.change(
@@ -439,9 +516,19 @@ def _on_drop(session: GuiSession, files: list[str] | None) -> object:
     """Le glisser-déposer copie les fichiers dans un dossier temporaire Gradio :
     on utilise ce dossier comme entrée (noms de fichiers conservés)."""
     if not files:
+        if session.upload_folder:
+            session.upload_folder = None
+            return gr.update(value="")
         return gr.update()
-    first = Path(files[0])
-    folder = first.parent
+    # Gradio may store each upload in a separate hash directory.
+    # Snapshot exactly the visible selection instead of scanning only the first parent.
+    folder = Path(tempfile.mkdtemp(prefix="seedvr2-input-"))
+    from .naming import resolve_output_path
+    for filename in files:
+        src = Path(filename)
+        dest = resolve_output_path(folder, src.name, ConflictPolicy.RENAME)
+        shutil.copy2(src, dest)
+    session.upload_folder = str(folder)
     session.log_lines.append(tr(session.language, "drop.logged", folder=folder))
     return gr.update(value=str(folder))
 
@@ -514,50 +601,39 @@ def _persist_settings(*values: Any) -> None:
     Les radios soumettent leurs **valeurs canoniques** — le JSON est donc
     indépendant de la langue d'affichage.
     """
-    keys = ["input_dir", "output_dir", "model_choice", "scale_choice", "scale_custom",
-            "output_format", "quality", "add_suffix", "suffix", "conflict_policy",
-            "tiling", "tile_size", "tile_overlap", "seed", "precision", "low_vram",
-            "clear_cache", "parallel_io", "resume", "backend",
-            "cfg_scale", "cfg_rescale", "cond_noise_scale", "color_fix"]
+    keys = SETTING_KEYS
     data = dict(zip(keys, values))
     # model_choice contient l'étiquette ; on ne garde que le nom du fichier.
     label = data["model_choice"] or ""
     if "·" in label:
         label = label.split("·")[0].strip()
     data["model_choice"] = label
+    data["language"] = load_settings().language
     save_settings(Settings.from_dict(data))
 
 
 # --------------------------------------------------------------------------- #
 # Démarrage / contrôle du lot                                                  #
 # --------------------------------------------------------------------------- #
-def _on_start(session: GuiSession, *values: Any) -> object:  # noqa: C901
+def _build_job(session: GuiSession, *values: Any) -> JobConfig:
     """Construit le JobConfig depuis les widgets et lance le BatchRunner."""
     _persist_settings(*values)
     (inp, out, model_label, scale_choice, scale_custom, out_fmt, quality,
      add_suffix, suffix, conflict, tiling, tile_size, tile_overlap, seed,
      precision, low_vram, clear_cache, parallel_io, resume, backend_choice,
-     cfg_scale, cfg_rescale, cond_noise_scale, color_fix) = values
+     cfg_scale, cfg_rescale, cond_noise_scale, color_fix, recursive, memory_profile, retry_failed) = values
     lang = session.language
-
-    if session.busy:
-        return gr.update(value=tr(lang, "err.already"))
 
     inp_dir = Path(str(inp).strip()) if str(inp).strip() else None
     if inp_dir is None or not inp_dir.exists():
-        return gr.update(value=tr(lang, "err.no_input"))
+        raise ValueError(tr(lang, "err.no_input"))
     out_text = str(out).strip() or str(inp_dir / "upscaled")
     out_dir = Path(out_text)
 
     session.refresh_models()
     model = session.models_by_label.get(str(model_label))
     if model is None:
-        return gr.update(value=tr(lang, "err.no_model"))
-
-    session.log_lines.clear()
-    session.progress = (0, 0, None)
-    session.tile = (0, 0)
-    session.preview = None
+        raise ValueError(tr(lang, "err.no_model"))
 
     # Un ancien settings.json peut contenir « demo » (backend supprimé) : on
     # retombe sur « auto » plutôt que de planter sur un backend fantôme.
@@ -587,18 +663,41 @@ def _on_start(session: GuiSession, *values: Any) -> object:  # noqa: C901
         cfg_scale=float(cfg_scale),
         cfg_rescale=float(cfg_rescale),
         cond_noise_scale=float(cond_noise_scale),
-        color_fix=bool(color_fix),
+        color_fix=bool(color_fix), recursive=bool(recursive),
+        memory_profile=str(memory_profile), retry_failed=bool(retry_failed),
     )
 
+    return job
+
+
+def _launch_job(session: GuiSession, job: JobConfig) -> None:
+    session.log_lines.clear()
+    session.progress = (0, 0, None)
+    session.tile = (0, 0)
+    session.preview = None
     session.bus = EventBus()
     session.runner = BatchRunner(job, session.bus)
     session.state = RunnerState.LOADING
     session.runner.start()
-    return gr.update(value=tr(lang, "start.started"))
+
+
+def _on_start(session: GuiSession, *values: Any) -> object:
+    with session.lock:
+        if session.busy:
+            return gr.update(value=tr(session.language, "err.already"))
+        try:
+            job = _build_job(session, *values)
+            preflight(job)
+            _launch_job(session, job)
+            return gr.update(value=tr(session.language, "start.started"))
+        except (ValueError, OSError) as exc:
+            return gr.update(value=str(exc))
 
 
 def _safe_call(session: GuiSession, action: str) -> None:
     """Pause / Reprendre / Annuler — jamais d'exception vers l'UI."""
+    if action == "cancel":
+        _clear_queue(session)
     runner = session.runner
     if runner is None:
         return
@@ -617,6 +716,8 @@ def _on_tick(session: GuiSession):  # noqa: C901
     runner = session.runner
     if runner is not None:
         session.state = runner.state
+        if runner.state is RunnerState.CANCELLING and not runner.is_alive:
+            session.state = RunnerState.IDLE
 
     if session.bus is not None:
         for event in session.bus.drain():
@@ -632,12 +733,21 @@ def _on_tick(session: GuiSession):  # noqa: C901
                 session.state = data["state"]
             elif kind == "tile":
                 session.tile = (data["index"], data["total"])
+            elif kind == "result":
+                session.latest_result = data
             elif kind == "finished":
                 stats = data["stats"]
+                if session.state is RunnerState.CANCELLING:
+                    session.state = RunnerState.IDLE
                 session.log_lines.append(tr(
                     lang, "summary", ok=stats.succeeded, fail=stats.failed,
                     skip=stats.skipped, avg=f"{stats.avg_seconds_per_image:.2f}",
                 ))
+
+    with session.lock:
+        if (session.pending_jobs and session.runner and session.runner.stats
+                and not session.runner.is_alive):
+            _launch_job(session, session.pending_jobs.popleft())
 
     done, total, remaining = session.progress
     preview_value = session.preview if session.preview else gr.update()
@@ -671,3 +781,151 @@ def launch(models_dir: Path | None = None, **launch_kwargs: Any) -> None:
     demo.queue()
     kwargs = {"server_name": "127.0.0.1", "inbrowser": True, **launch_kwargs}
     demo.launch(**kwargs)
+
+
+def _check_job(session, *values):
+    try:
+        job = _build_job(session, *values)
+        summary = preflight(job)
+        files = [str(p) for p in scan_inputs(job)]
+        return json.dumps(summary, ensure_ascii=False, indent=2), gr.update(choices=files, value=files[0])
+    except (OSError, ValueError) as exc:
+        return str(exc), gr.update(choices=[], value=None)
+
+
+def _queue_text(session):
+    return '\n'.join(f'{i}. {j.input_dir} → {j.output_dir} (×{j.scale:g})'
+                     for i, j in enumerate(session.pending_jobs, 1)) or 'File vide / Empty queue'
+
+
+def _enqueue_job(session, *values):
+    try:
+        job = _build_job(session, *values)
+        preflight(job)
+        with session.lock:
+            session.pending_jobs.append(job)
+        return _queue_text(session)
+    except (OSError, ValueError) as exc:
+        return str(exc)
+
+
+def _start_queue(session):
+    with session.lock:
+        if not session.busy and session.pending_jobs:
+            _launch_job(session, session.pending_jobs.popleft())
+    return _queue_text(session)
+
+
+def _clear_queue(session):
+    with session.lock:
+        session.pending_jobs.clear()
+    return _queue_text(session)
+
+
+def _export_preset(*values):
+    data = dict(zip(SETTING_KEYS, values))
+    for key in ('input_dir', 'output_dir', 'retry_failed'):
+        data.pop(key, None)
+    if data.get('model_choice'):
+        data['model_choice'] = data['model_choice'].split('·')[0].strip()
+    path = Path(tempfile.mkdtemp(prefix='seedvr2-preset-')) / 'preset.json'
+    atomic_json(path, {'version': 1, 'settings': data})
+    return str(path)
+
+
+def _import_preset(session, filename):
+    try:
+        path = Path(filename)
+        if path.stat().st_size > 65536:
+            raise ValueError('Préréglage trop volumineux / Preset too large')
+        payload = json.loads(path.read_text(encoding='utf-8'))
+        if payload.get('version') != 1 or not isinstance(payload.get('settings'), dict):
+            raise ValueError('Format de préréglage inconnu / Unknown preset format')
+        data = payload['settings']
+        defaults = Settings()
+        for key, value in data.items():
+            if key in SETTING_KEYS and not isinstance(value, type(getattr(defaults, key))):
+                # JSON may encode an integer for a float-valued setting.
+                if not (isinstance(getattr(defaults, key), float) and type(value) in (int, float)):
+                    raise ValueError(f'Type invalide : {key}')
+        settings = Settings.from_dict(data)
+        choices = session.refresh_models()
+        result = []
+        for key in SETTING_KEYS:
+            if key in ('input_dir', 'output_dir', 'retry_failed') or key not in data:
+                result.append(gr.update())
+            elif key == 'model_choice':
+                label = next((v for v in choices if session.models_by_label[v].path.name == settings.model_choice), None)
+                result.append(gr.update(value=label) if label else gr.update())
+            else:
+                result.append(gr.update(value=getattr(settings, key)))
+        return result
+    except (OSError, ValueError, TypeError) as exc:
+        raise gr.Error(str(exc)) from exc
+
+
+def _test_crop(session, source, x, y, w, h, *values):
+    with session.lock:
+        if session.busy:
+            return gr.update(value=tr(session.language, 'err.already'))
+        try:
+            job = _build_job(session, *values)
+            files = scan_inputs(job)
+            selected = Path(source).resolve() if source else files[0]
+            if selected not in files:
+                raise ValueError('Image hors sélection / Image outside selection')
+            job = dataclasses.replace(job, input_files=(selected,), retry_failed=False, resume=False,
+                crop=(int(x), int(y), int(w), int(h)),
+                output_dir=job.output_dir / '.seedvr2_tests' / uuid.uuid4().hex[:12])
+            preflight(job)
+            _launch_job(session, job)
+            return gr.update(value='Essai en cours / Testing crop…')
+        except (OSError, ValueError, IndexError) as exc:
+            return gr.update(value=str(exc))
+
+
+def _inspect_result(session, x, y, zoom):
+    from PIL import Image
+    from .images import load_image
+    if not session.latest_result:
+        raise gr.Error('Aucun résultat disponible / No result yet')
+    entry = session.latest_result
+    try:
+        before = load_image(Path(entry['source'])).image
+        if entry.get('crop'):
+            cx, cy, cw, ch = entry['crop']
+            before = before.crop((cx, cy, cx + cw, cy + ch))
+        with Image.open(entry['destination']) as after:
+            x = max(0, min(int(x), after.width - 1))
+            y = max(0, min(int(y), after.height - 1))
+            side = 512 // int(zoom)
+            box = (x, y, min(x + side, after.width), min(y + side, after.height))
+            crop_after = after.crop(box)
+            ratio_x, ratio_y = before.width / after.width, before.height / after.height
+            # Resample only the inspection window, not the entire original.
+            crop_before = before.transform(crop_after.size, Image.Transform.EXTENT,
+                (box[0] * ratio_x, box[1] * ratio_y, box[2] * ratio_x, box[3] * ratio_y),
+                resample=Image.Resampling.BICUBIC)
+        target = (crop_after.width * int(zoom), crop_after.height * int(zoom))
+        def pad(image):
+            canvas = Image.new('RGB', (512, 512), '#222222')
+            canvas.paste(image.resize(target, Image.Resampling.NEAREST), (0, 0))
+            return canvas
+        return pad(crop_before), pad(crop_after)
+    except (OSError, ValueError) as exc:
+        raise gr.Error(str(exc)) from exc
+
+
+def _history(folder):
+    if not folder:
+        return []
+    entries = sorted((Path(folder) / '.seedvr2_history').glob('*.json'), reverse=True)[:20]
+    result = []
+    for path in entries:
+        try:
+            payload = json.loads(path.read_text(encoding='utf-8'))
+            result.append({'date': path.stem, 'state': payload['state'],
+                           'stats': payload['stats'], 'config': payload['config']})
+        except (OSError, ValueError, KeyError):
+            continue
+    return result

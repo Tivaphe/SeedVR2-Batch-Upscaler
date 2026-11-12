@@ -5,3 +5,12 @@ models/*.pth
 models/*.safetensors
 models/*.gguf
 SeedVR/
+
+.update-backups/
+.update-state.json
+.update-state.tmp
+.update.lock
+config/memory_profiles.json
+input/
+output/
+upscaled/

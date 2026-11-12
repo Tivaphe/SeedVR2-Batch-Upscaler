@@ -2,16 +2,18 @@
 
 Points clés :
     - les métadonnées EXIF (et le profil ICC) sont préservées quand le
-      format de sortie le permet (JPEG/WebP nativement ; PNG via piexif
-      s'il est installé) ;
+      format de sortie le permet (JPEG/WebP/PNG nativement via Pillow) ;
     - le canal alpha est traité séparément : le modèle de diffusion ne
-      produit que du RGB, l'alpha est donc upscalé en bicubique puis
+      produit que du RGB, l'alpha est donc upscalé en bilinéaire puis
       réassemblé ;
     - la rotation EXIF est appliquée à la lecture pour éviter les images
       couchées en sortie.
 """
 from __future__ import annotations
 
+import os
+import io
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,14 +21,6 @@ from PIL import Image, ImageCms, ImageOps
 from PIL.Image import Image as PILImage
 
 from .models import OutputFormat
-
-try:  # piexif : écriture EXIF dans les PNG (optionnel, non bloquant)
-    import piexif  # type: ignore[import-untyped]
-
-    _HAS_PIEXIF = True
-except Exception:  # pragma: no cover - dépend de l'installation
-    _HAS_PIEXIF = False
-
 
 @dataclass
 class LoadedImage:
@@ -48,10 +42,20 @@ def load_image(path: Path) -> LoadedImage:
     # Image.open est paresseux : .load() explicite pour capter les erreurs ici.
     with Image.open(path) as raw:
         raw.load()
-        exif_bytes = raw.info.get("exif")
         icc_profile = raw.info.get("icc_profile")
         source_format = raw.format or "?"
         image = ImageOps.exif_transpose(raw)  # applique le tag Orientation
+        exif = image.getexif()
+        exif_bytes = exif.tobytes() if exif else None
+        if image.mode == "CMYK" and icc_profile:
+            try:
+                srgb = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB"))
+                image = ImageCms.profileToProfile(image, ImageCms.ImageCmsProfile(io.BytesIO(icc_profile)),
+                                                  srgb, outputMode="RGB")
+                icc_profile = srgb.tobytes()
+            except (ImageCms.PyCmsError, OSError, ValueError):
+                # Never label converted RGB pixels with a CMYK profile.
+                icc_profile = None
         image = _normalize_mode(image)
     return LoadedImage(
         image=image,
@@ -64,7 +68,7 @@ def load_image(path: Path) -> LoadedImage:
 
 def _normalize_mode(image: PILImage) -> PILImage:
     """Normalise vers RGB / RGBA en préservant l'alpha s'il est réellement utilisé."""
-    if image.mode in ("RGBA", "LA", "PA"):
+    if image.mode in ("RGBA", "LA", "PA") or "transparency" in image.info:
         converted = image.convert("RGBA")
         # Si l'alpha est 255 partout, autant travailler en RGB (plus léger).
         if converted.getchannel("A").getextrema() == (255, 255):
@@ -128,24 +132,26 @@ def save_image(
         # qualité 100 -> niveau 3 (rapide) … qualité 1 -> niveau 9 (dense)
         kwargs.update(format="PNG", compress_level=max(1, 9 - quality // 15))
 
-    if fmt is OutputFormat.PNG and exif_bytes and _HAS_PIEXIF:
-        # PNG n'a pas de slot EXIF standard pour PIL : injection via piexif.
-        try:
-            exif_dict = piexif.load(exif_bytes)
-            kwargs["pnginfo"] = _pnginfo_with_exif(exif_dict)
-        except Exception:
-            pass  # on ne bloque jamais un lot pour des métadonnées
-
-    to_save.save(path, **kwargs)
-
-
-def _pnginfo_with_exif(exif_dict: dict) -> object:
-    """Construit un PngInfo contenant la chunk eXIf (via piexif)."""
-    from PIL import PngImagePlugin
-
-    info = PngImagePlugin.PngInfo()
-    info.add(b"eXIf", piexif.dump(exif_dict), zip=False)
-    return info
+    if icc_profile:
+        kwargs["icc_profile"] = icc_profile
+    if exif_bytes:
+        # Pillow supports PNG eXIf natively. Orientation was removed on load.
+        exif = Image.Exif()
+        exif.load(exif_bytes)
+        exif.pop(274, None)
+        for tag, value in ((40962, image.width), (40963, image.height)):
+            if tag in exif:
+                exif[tag] = value
+        kwargs["exif"] = exif.tobytes()
+    fd, temporary = tempfile.mkstemp(prefix=".seedvr2-", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            to_save.save(handle, **kwargs)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
 
 
 def has_real_error(path: Path) -> str | None:

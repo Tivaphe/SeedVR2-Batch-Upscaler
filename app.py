@@ -66,6 +66,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="Désactive le wavelet color fix officiel (actif par défaut).")
     parser.add_argument("--share", action="store_true",
                         help="Partage Gradio en réseau (mode interface uniquement).")
+    parser.add_argument("--dry-run", action="store_true", help="Vérifie le lot sans charger le GPU.")
+    parser.add_argument("--recursive", action="store_true", help="Inclut les sous-dossiers.")
+    parser.add_argument("--retry-failed", action="store_true", help="Retente seulement les erreurs du manifeste.")
+    parser.add_argument("--memory-profile", choices=["auto", "eco", "balanced", "fast"], default="auto")
+    parser.add_argument("--crop", nargs=4, type=int, metavar=("X", "Y", "W", "H"),
+                        help="Traite cette zone des images sélectionnées (coordonnées après orientation EXIF).")
     return parser.parse_args(argv)
 
 
@@ -138,8 +144,20 @@ def _run_cli(args: argparse.Namespace) -> int:
         cfg_rescale=float(args.cfg_rescale),
         cond_noise_scale=float(args.cond_noise_scale),
         color_fix=not args.no_color_fix,
+        recursive=args.recursive, retry_failed=args.retry_failed,
+        memory_profile=args.memory_profile, crop=tuple(args.crop) if args.crop else None,
     )
 
+    from seedvr2_upscaler.jobs import preflight
+    try:
+        summary = preflight(job)
+    except (OSError, ValueError) as exc:
+        print(f"⛔ {exc}")
+        return 2
+    if args.dry_run:
+        import json
+        print(json.dumps(summary, indent=2, ensure_ascii=False))
+        return 0
     bus = EventBus()
     runner = BatchRunner(job, bus)
 
@@ -166,9 +184,9 @@ def _run_cli(args: argparse.Namespace) -> int:
         print("\nAnnulation demandée (Ctrl+C)…")
         runner.cancel()
         console_loop()
-    runner._thread.join(timeout=10)  # assure la finalisation des fichiers
+    runner.wait()
     print(f"Terminé — voir {job.output_dir}")
-    return 0
+    return runner.exit_code
 
 
 if __name__ == "__main__":
