@@ -63,7 +63,7 @@ REM literally - it pins torch==2.3.0, which is incompatible with recent
 REM Python versions and would downgrade your CUDA torch. We install a
 REM curated unpinned selection instead (apex stays separate: prebuilt
 REM wheels are linked in the repo README; it cannot compile on Windows).
-python -m pip install "diffusers>=0.29" "transformers>=4.38" "rotary-embedding-torch>=0.5" opencv-python mediapy
+python -m pip install -r requirements-inference.txt
 if errorlevel 1 (
     echo [WARNING] Some official-repo dependencies failed
     echo   (apex is the usual suspect on Windows). Install the prebuilt

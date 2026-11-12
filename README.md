@@ -37,6 +37,42 @@ right: SeedVR2 ×4**, displayed at identical size:
 | Extras | Resume of an interrupted batch (`.seedvr2_resume.json`), automatic settings persistence, parallel disk writes, EXIF + ICC profile preserved (native JPEG/WebP, PNG via piexif), alpha channel preserved, full CLI |
 | Comfort | **Windows sleep blocked during a batch** (restored afterwards), completion beep, disk space preflight check, "tile i/N" sub-progress, 📂 button to open the output folder, `log.txt` in append mode (history kept) |
 
+## Reliable batches and branch-aware updates
+
+- Atomic image saves, confirmed asynchronous writes, versioned resume manifests,
+  stable per-path seeds, live logs and per-run JSON history.
+- Corrected EXIF orientation, palette transparency and PNG ICC preservation;
+  exact output dimensions and original JPEG extension casing.
+- Preflight before GPU loading, crop tests, synchronized pixel inspection,
+  portable presets, batch queues and recursive folders.
+- Incremental tile assembly, temporary-disk float buffers for large outputs,
+  memory profiles and progressively smaller tiles after OOM.
+- **`update.bat`** lists remote branches and updates either a Git checkout or a ZIP
+  installation without Git. It backs up replaced code, preserves user data and
+  refreshes the venv while constraining the installed PyTorch CUDA version.
+
+Close the app before updating. Choose a trusted **published** branch and confirm.
+Git installs must be clean (user settings are preserved); divergent branches are
+refused. ZIP updates use a pinned commit archive and keep recovery manifests in
+`.update-backups/`. The official SeedVR checkout and models are not upgraded.
+If CUDA PyTorch is missing or dependencies fail, the script reports an incomplete
+update rather than silently installing a CPU build. Package changes are not
+transactionally rolled back. `update.bat --no-venv` updates code only.
+
+Resume manifests now persist after successful completion. Disable resume to redo
+all images. Old manifests are ignored; the stable seed derivation changes results
+relative to older versions. File identity uses size/mtime, not full content hashing.
+Batch queues are session-local; per-batch resume is persistent. Large output
+assembly still needs final-image RAM and temporary-disk space (16 bytes/pixel).
+
+See the [detailed French workflow/update guide](docs/UPDATES_AND_WORKFLOWS.fr.md).
+CPU regression tests (Pillow, numpy, Gradio 5):
+
+```shell
+python tests/selftest.py
+python -m unittest discover -s tests -p "test_*.py" -v
+```
+
 ## 1. Installation (Windows)
 
 ```bat

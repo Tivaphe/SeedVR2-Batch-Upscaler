@@ -12,6 +12,10 @@ de la fusion (``stitch``).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Iterable
+from contextlib import ExitStack
+import tempfile
+from pathlib import Path
 
 import numpy as np
 from PIL import Image
@@ -58,9 +62,10 @@ def compute_tiles(width: int, height: int, tile_size: int, overlap: int) -> list
     def axis_positions(length: int) -> list[tuple[int, int]]:
         if length <= tile_size:
             return [(0, length)]
-        starts = list(range(0, length, step))
-        # Dernière tuile : plaquée sur le bord si besoin (recouvrement > overlap, bénin).
-        return [(s, min(s + tile_size, length)) for s in starts]
+        starts = list(range(0, length - tile_size + 1, step))
+        if starts[-1] != length - tile_size:
+            starts.append(length - tile_size)
+        return [(s, s + tile_size) for s in starts]
 
     tiles = [
         Tile(x0, y0, x1, y1)
@@ -105,43 +110,55 @@ def _feather_mask(
 
 def stitch(
     tiles: list[Tile],
-    upscaled: list[PILImage],
+    upscaled: Iterable[PILImage],
     img_w: int,
     img_h: int,
     scale: float,
     overlap: int,
+    memory_limit_bytes: int = 256 * 1024**2,
 ) -> PILImage:
-    """Recoud les tuiles upscalées en une image complète (fusion pondérée).
+    """Consume tiles one by one. Large float buffers spill to temporary disk.
 
-    Args:
-        tiles: tuiles en coordonnées d'entrée (même ordre que ``upscaled``).
-        upscaled: images PIL (RGB) upscalées, une par tuile.
-        img_w, img_h: dimensions de l'image d'entrée.
-        scale: facteur d'upscale appliqué par le modèle.
-        overlap: recouvrement demandé (px d'entrée) ; fixe la longueur des rampes.
+    The final RGB image still occupies 3 bytes/pixel in RAM; this is not an
+    unlimited-size image encoder. Temporary float storage requires 16 bytes/pixel.
     """
     out_w, out_h = round(img_w * scale), round(img_h * scale)
-    # Longueur des rampes de fusion, exprimée en pixels de sortie.
-    ramp_x = ramp_y = max(1, int(round(overlap * scale)))
-
-    canvas = np.zeros((out_h, out_w, 3), dtype=np.float32)
-    weights = np.zeros((out_h, out_w), dtype=np.float32)
-
-    for tile, up in zip(tiles, upscaled):
-        ox0, oy0 = round(tile.x0 * scale), round(tile.y0 * scale)
-        tw, th = round(tile.width * scale), round(tile.height * scale)
-        if up.size != (tw, th):  # tolérance aux arrondis du backend
-            up = up.resize((tw, th), Image.LANCZOS)
-        mask = _feather_mask(
-            tw, th, ramp_x, ramp_y,
-            left=tile.x0 > 0,
-            right=tile.x1 < img_w,
-            top=tile.y0 > 0,
-            bottom=tile.y1 < img_h,
-        )
-        canvas[oy0 : oy0 + th, ox0 : ox0 + tw] += np.asarray(up, dtype=np.float32) * mask[:, :, None]
-        weights[oy0 : oy0 + th, ox0 : ox0 + tw] += mask
-
-    weights = np.maximum(weights, 1e-6)  # sécurité : jamais de division par 0
-    result = np.clip(canvas / weights[:, :, None], 0, 255).astype(np.uint8)
-    return Image.fromarray(result, "RGB")
+    ramp = max(1, round(overlap * scale))
+    with ExitStack() as stack:
+        if out_w * out_h * 16 > memory_limit_bytes:
+            folder = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="seedvr2-tiles-")))
+            canvas = np.memmap(folder / 'rgb.bin', mode='w+', dtype=np.float32,
+                               shape=(out_h, out_w, 3))
+            weights = np.memmap(folder / 'weights.bin', mode='w+', dtype=np.float32,
+                                shape=(out_h, out_w))
+            # Close mmap before TemporaryDirectory cleanup (required on Windows).
+            stack.callback(canvas._mmap.close)
+            stack.callback(weights._mmap.close)
+        else:
+            canvas = np.zeros((out_h, out_w, 3), dtype=np.float32)
+            weights = np.zeros((out_h, out_w), dtype=np.float32)
+        iterator = iter(upscaled)
+        for tile in tiles:
+            try:
+                up = next(iterator)
+            except StopIteration as exc:
+                raise ValueError('Missing upscaled tile') from exc
+            ox0, oy0 = round(tile.x0 * scale), round(tile.y0 * scale)
+            # Shared rounded endpoints avoid gaps/overruns at fractional scales.
+            tw = round(tile.x1 * scale) - ox0
+            th = round(tile.y1 * scale) - oy0
+            if up.size != (tw, th):
+                up = up.resize((tw, th), Image.LANCZOS)
+            mask = _feather_mask(tw, th, ramp, ramp, tile.x0 > 0,
+                                 tile.x1 < img_w, tile.y0 > 0, tile.y1 < img_h)
+            canvas[oy0:oy0 + th, ox0:ox0 + tw] += np.asarray(up, dtype=np.float32) * mask[:, :, None]
+            weights[oy0:oy0 + th, ox0:ox0 + tw] += mask
+            del up, mask
+        result = Image.new('RGB', (out_w, out_h))
+        # Normalize in bands, avoiding another full float image allocation.
+        rows = max(1, min(128, memory_limit_bytes // max(1, out_w * 32)))
+        for y in range(0, out_h, rows):
+            block = canvas[y:y + rows] / np.maximum(weights[y:y + rows, :, None], 1e-6)
+            result.paste(Image.fromarray(np.clip(block, 0, 255).astype(np.uint8)), (0, y))
+            del block
+        return result

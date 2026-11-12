@@ -61,7 +61,7 @@ class OutputFormat(enum.Enum):
 def format_for_source(source: Path, requested: OutputFormat) -> tuple[OutputFormat, str]:
     """Résout (format effectif, extension) pour un fichier source donné.
 
-    En mode KEEP : PNG~→.png, JPG/JPEG~→.jpg, WEBP~→.webp ; les entrées
+    En mode KEEP : PNG/JPG/JPEG/WEBP conservent leur extension exacte ; les entrées
     BMP/TIFF (non réinscriptibles) sont exportées en PNG.
     """
     if requested is not OutputFormat.KEEP:
@@ -70,10 +70,10 @@ def format_for_source(source: Path, requested: OutputFormat) -> tuple[OutputForm
         return requested, ext
     suffix = source.suffix.lower()
     if suffix in {".jpg", ".jpeg"}:
-        return OutputFormat.JPEG, ".jpg"
+        return OutputFormat.JPEG, source.suffix
     if suffix == ".webp":
-        return OutputFormat.WEBP, ".webp"
-    return OutputFormat.PNG, ".png"
+        return OutputFormat.WEBP, source.suffix
+    return OutputFormat.PNG, source.suffix if suffix == ".png" else ".png"
 
 
 class Precision(enum.Enum):
@@ -149,6 +149,11 @@ class JobConfig:
     cfg_scale: float = 1.0                  # guidage diffusion (1.0 = officiel ; > 1 accentue)
     cfg_rescale: float = 0.0                # rescale du guidage (0.0 = valeur officielle)
     cond_noise_scale: float = 0.0           # bruit de condition latent (0.0 = valeur officielle)
+    recursive: bool = False
+    retry_failed: bool = False
+    memory_profile: str = "auto"
+    input_files: tuple[Path, ...] = ()
+    crop: tuple[int, int, int, int] | None = None
     color_fix: bool = True                  # wavelet color fix officiel (si dispo dans le dépôt)
 
 
@@ -162,6 +167,7 @@ class ImageOutcome:
     skipped: bool = False
     error: str | None = None
     seconds: float = 0.0
+    effective_tiling: TilingConfig | None = None
 
 
 @dataclass

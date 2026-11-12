@@ -298,7 +298,7 @@ class TestBatchRunner(unittest.TestCase):
             for n in ("photo001.png", "vacances.jpg", "image_test.webp"):
                 out = out_dir / n  # extension ET nom strictement identiques
                 self.assertTrue(out.exists(), out)
-                self.assertEqual(Image.open(out).size, (160, 128))  # arrondi /16
+                self.assertEqual(Image.open(out).size, (160, 120))  # dimensions exactes, indépendantes du VAE
 
     def test_reprise_ignore_deja_faits(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

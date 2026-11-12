@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from PIL.Image import Image as PILImage
+from PIL import Image
 
 from ..constants import DIVISOR, TILING_AUTO_THRESHOLD_MPX
 from ..images import merge_alpha, split_alpha
@@ -128,25 +129,26 @@ class UpscaleBackend(abc.ABC):
 
         if use_tiles and (w > max_in_side or h > max_in_side):
             tiles = compute_tiles(w, h, max_in_side, overlap)
-            upscaled_tiles: list[PILImage] = []
-            for index, tile in enumerate(tiles, 1):
-                if should_abort():
-                    raise InterruptedError("Traitement annulé pendant le tuilage.")
-                if tile_cb is not None:
-                    tile_cb(index, len(tiles))
-                log(f"  tuile {index}/{len(tiles)} ({tile.width}×{tile.height})")
-                region = rgb.crop(tile.crop_box())
-                tw = ceil_div(tile.width * scale)
-                th = ceil_div(tile.height * scale)
-                eff_seed = seed + index  # déterministe, différent par tuile
-                upscaled_tiles.append(
-                    self._upscale_region(region, tw, th, eff_seed, log)
-                )
-            result = stitch(tiles, upscaled_tiles, w, h, scale, overlap)
+            def upscaled_tiles():
+                for index, tile in enumerate(tiles, 1):
+                    if should_abort():
+                        raise InterruptedError("Traitement annulé pendant le tuilage.")
+                    if tile_cb is not None:
+                        tile_cb(index, len(tiles))
+                    log(f"  tuile {index}/{len(tiles)} ({tile.width}×{tile.height})")
+                    region = rgb.crop(tile.crop_box())
+                    yield self._upscale_region(region, ceil_div(tile.width * scale),
+                                              ceil_div(tile.height * scale), seed + index, log)
+            result = stitch(tiles, upscaled_tiles(), w, h, scale, overlap)
             if tile_cb is not None:
                 tile_cb(0, 0)  # fin d'image : réinitialise le compteur de l'UI
         else:
             result = self._upscale_region(rgb, out_w, out_h, seed, log)
+
+        # Exact requested dimensions regardless of tile/VAE alignment.
+        target_size = (max(1, round(w * scale)), max(1, round(h * scale)))
+        if result.size != target_size:
+            result = result.resize(target_size, Image.Resampling.LANCZOS)
 
         # Le canal alpha n'est pas généré par le modèle : upscale bilinéaire séparé
         # (le bilinéaire évite les halos de Gibbs sur les masques).

@@ -1,0 +1,7 @@
+# Official backend dependencies, separate from the CUDA torch installation.
+# Existing torch/torchvision are constrained by scripts/update.py during updates.
+diffusers>=0.29,<1
+transformers>=4.38,<5
+rotary-embedding-torch>=0.5,<1
+opencv-python>=4.8,<5
+mediapy>=1.1

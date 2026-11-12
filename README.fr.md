@@ -22,7 +22,7 @@ droite : SeedVR2 ×4**, affichés à taille identique :
 
 | Cité flottante | Feuille à contre-jour |
 |---|---|
-| ![Comparaison — cité](docs/showcase-city.jpg) | ![Comparaison — feuille](docs/showcase-leaf.jpg) |
+| ![Comparaison — cité](docs/showcase-city.png) | ![Comparaison — feuille](docs/showcase-leaf.png) |
 
 > 📷 Pour ajouter une capture de l'interface, enregistrez-la sous
 > `docs/screenshot_ui.png` et insérez-la ici. Pour générer une comparaison
@@ -39,8 +39,23 @@ droite : SeedVR2 ×4**, affichés à taille identique :
 | Lot | Dossier d'entrée complet, formats PNG/JPG/JPEG/WEBP/BMP/TIFF, poursuite après échec, `log.txt` (journal complet) + `report.txt` (bilan : temps total, moyenne, erreurs) |
 | UI Gradio | **Bilingue FR/EN à chaud** (sans rechargement), sélection de dossiers, **glisser-déposer**, facteur ×2/×4/×8/personnalisé, format + qualité de sortie, barre de progression, **ETA**, journal temps réel, **aperçu avant/après** (curseur comparatif), boutons **Démarrer / Pause / Reprendre / Annuler**, bandeau d'état GPU |
 | VRAM | Modèle chargé **une seule fois**, `torch.inference_mode()`, BF16 auto (FP16 sinon), swap CPU↔GPU du DiT/VAE (comme le script officiel), vidage du cache entre images, **tuilage** automatique + repli automatique vers le tuilage en cas d'OOM, allocateur `expandable_segments` (anti-fragmentation), `cudnn.benchmark` (autotune des convs, formes constantes), embeddings texte gardés sur GPU, budget VAE calibré sur la VRAM libre |
-| Bonus | Reprise d'un lot interrompu (`.seedvr2_resume.json`), sauvegarde automatique des paramètres, écritures disque en parallèle, EXIF + profil ICC préservés (JPEG/WebP natifs, PNG via piexif), canal alpha préservé, CLI complète |
+| Bonus | Reprise d'un lot interrompu (`.seedvr2_resume.json`), sauvegarde automatique des paramètres, écritures disque en parallèle, EXIF + profil ICC préservés (JPEG/WebP/PNG natifs Pillow), canal alpha préservé, CLI complète |
 | Confort | **Veille Windows bloquée pendant le lot** (restaurée après), bip de fin de lot, vérification de l'espace disque au départ, sous-progression « tuile i/N », bouton 📂 pour ouvrir le dossier de sortie, `log.txt` en mode ajout (historique conservé) |
+
+## Nouveautés : lots fiables et mise à jour
+
+- Écritures atomiques, validation des sauvegardes parallèles, reprise v2 avec
+  contrôle des sources/sorties, seeds stables et historique JSON par lot.
+- EXIF corrigées après rotation, transparence indexée et ICC PNG préservés ;
+  dimensions finales exactes et extension JPEG conservée.
+- Vérification avant chargement GPU, essai sur une zone, inspection synchronisée
+  à 100 %, import/export de préréglages et file de plusieurs lots.
+- Sous-dossiers avec arborescence conservée, assemblage progressif des tuiles,
+  stockage temporaire sur disque pour les grands tableaux et repli mémoire progressif.
+- **`update.bat`** : choix d’une branche distante, prise en charge Git **ou ZIP sans Git**,
+  sauvegarde du code remplacé et actualisation de la venv avec PyTorch existant contraint.
+
+**[Guide détaillé : utilisation, limites, migration de reprise et mises à jour](docs/UPDATES_AND_WORKFLOWS.fr.md)**
 
 ## 1. Installation (Windows)
 

@@ -22,24 +22,25 @@ import shutil
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from .backend import BackendOptions, BackendUnavailable, create_backend
+from .backend import BackendOptions, create_backend
 from .backend.base import UpscaleBackend
 from .constants import (
-    DEFAULT_MODELS_DIR,
     IMAGE_EXTENSIONS,
     LOG_FILENAME,
     REPORT_FILENAME,
     RESUME_FILENAME,
 )
 from .images import save_image
+from .jobs import atomic_json, preflight, scan_inputs, serialize_job
+from .memory import apply_auto_profile, remember_profile
 from .models import (
     BatchStats,
-    ConflictPolicy,
     ImageOutcome,
     JobConfig,
     RunnerState,
@@ -63,10 +64,27 @@ class EventBus:
     """File thread-safe de messages destinés à l'interface graphique."""
 
     def __init__(self) -> None:
-        self._q: "queue.Queue[BusEvent]" = queue.Queue()
+        self._q: "queue.Queue[BusEvent]" = queue.Queue(maxsize=4096)
+        self._preview_lock = threading.Lock()
+        self._latest_preview: BusEvent | None = None
 
     def put(self, kind: str, **data: Any) -> None:
-        self._q.put(BusEvent(kind, data))
+        event = BusEvent(kind, data)
+        if kind == "preview":
+            with self._preview_lock:
+                self._latest_preview = event
+            return
+        # A closed browser must not grow RAM indefinitely or block inference.
+        # The complete journal remains on disk; the UI only needs recent events.
+        while True:
+            try:
+                self._q.put_nowait(event)
+                return
+            except queue.Full:
+                try:
+                    self._q.get_nowait()
+                except queue.Empty:
+                    pass
 
     def drain(self) -> list[BusEvent]:
         """Récupère tous les événements en attente (appelé par l'UI)."""
@@ -75,6 +93,10 @@ class EventBus:
             try:
                 events.append(self._q.get_nowait())
             except queue.Empty:
+                with self._preview_lock:
+                    if self._latest_preview:
+                        events.append(self._latest_preview)
+                        self._latest_preview = None
                 return events
 
     # Raccourcis typés -----------------------------------------------------
@@ -116,9 +138,15 @@ class BatchRunner:
         self._thread: threading.Thread | None = None
         self._state = RunnerState.IDLE
 
-        self._log_lines: list[str] = []
+        self._log_lines: deque[str] = deque(maxlen=2000)
         self._durations: list[float] = []
         self._backend: UpscaleBackend | None = None
+        self.stats: BatchStats | None = None
+        self._records: dict[str, dict] = {}
+        self._save_futures: dict[Path, Future] = {}
+        self._log_handle = None
+        self._journal_error: str | None = None
+
 
     # ------------------------------------------------------------- API UI #
     @property
@@ -130,6 +158,20 @@ class BatchRunner:
             raise RuntimeError("Le traitement est déjà démarré.")
         self._thread = threading.Thread(target=self._run_guarded, daemon=True, name="batch-runner")
         self._thread.start()
+
+    @property
+    def is_alive(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def wait(self, timeout: float | None = None) -> None:
+        if self._thread:
+            self._thread.join(timeout)
+
+    @property
+    def exit_code(self) -> int:
+        if self._cancel.is_set():
+            return 130
+        return 1 if self._state is RunnerState.FAILED or (self.stats and self.stats.errors) else 0
 
     def pause(self) -> None:
         self._pause.clear()
@@ -150,6 +192,13 @@ class BatchRunner:
         line = f"[{datetime.now():%H:%M:%S}] {message}"
         self._log_lines.append(line)
         self.bus.log(line)
+        if self._log_handle is not None:
+            try:
+                self._log_handle.write(line + "\n")
+                self._log_handle.flush()
+            except OSError as exc:
+                self._journal_error = str(exc)
+
 
     def _wait_if_paused(self) -> None:
         while not self._pause.is_set() and not self._cancel.is_set():
@@ -167,6 +216,7 @@ class BatchRunner:
     # ----------------------------------------------------------- exécution
     def _run_guarded(self) -> None:
         stats = BatchStats(started_at=time.time())
+        self.stats = stats
         self._inhibit_sleep()  # un lot peut durer des heures : pas de veille !
         try:
             self._run(stats)
@@ -178,104 +228,102 @@ class BatchRunner:
             stats.errors.append(f"fatal: {exc!r}")
             self._set_state(RunnerState.FAILED)
         finally:
+            if self._backend is not None:
+                try:
+                    self._backend.unload()
+                except Exception as exc:
+                    self._log(f"Avertissement unload : {exc}")
             self._restore_sleep()
-            self._finalize(stats)
-            self.bus.finished(stats)
+            try:
+                self._finalize(stats)
+            finally:
+                try:
+                    if self._log_handle:
+                        self._log_handle.close()
+                except OSError as exc:
+                    stats.errors.append(f"journal close: {exc}")
+                finally:
+                    self.bus.finished(stats)
 
     def _run(self, stats: BatchStats) -> None:  # noqa: C901, PLR0912, PLR0915
         job = self.job
         self._set_state(RunnerState.LOADING)
-
-        options = BackendOptions(
-            precision=job.precision,
-            low_vram=job.low_vram,
-            clear_cache=job.clear_cache,
-            tiling=job.tiling,
-            cfg_scale=job.cfg_scale,
-            cfg_rescale=job.cfg_rescale,
-            cond_noise_scale=job.cond_noise_scale,
-            color_fix=job.color_fix,
-        )
-        models_dir = job.model.path.parent if job.model.path.name else DEFAULT_MODELS_DIR
-        self._backend = self._backend_factory(job.backend_name, options, models_dir)
-        try:
-            self._backend.load(job.model, log=self._log)
-        except BackendUnavailable as exc:
-            self._log(str(exc))
-            stats.errors.append(str(exc))
-            self._set_state(RunnerState.FAILED)
-            return
-
-        files = self._scan_inputs(job.input_dir)
+        summary = preflight(job)
+        self._log_handle = (job.output_dir / LOG_FILENAME).open("a", encoding="utf-8")
+        self._log(f"Pré-vérification : {summary}")
+        files = scan_inputs(job)
         stats.total = len(files)
-        if not files:
-            self._log(f"Aucune image prise en charge dans {job.input_dir}.")
-            self._set_state(RunnerState.FINISHED)
-            return
-        self._log(f"{len(files)} image(s) détectée(s) dans {job.input_dir}.")
-
-        job.output_dir.mkdir(parents=True, exist_ok=True)
         self._check_disk_space(files)
         done = self._load_resume(files)
-        todo = [f for f in files if f.name not in done]
-        if done:
-            self._log(f"Reprise : {len(files) - len(todo)} image(s) déjà traitée(s) ignorée(s).")
-
+        todo = [f for f in files if self._key(f) not in done]
+        if job.retry_failed:
+            todo = [f for f in todo if self._records.get(self._key(f), {}).get("status") == "failed"]
+        stats.skipped = len(files) - len(todo)
+        if not todo:
+            self._log("Aucune image à traiter avec cette sélection/reprise.")
+            self._set_state(RunnerState.FINISHED)
+            return
+        tiling = job.tiling
+        if job.memory_profile == "eco":
+            tiling = dataclasses.replace(tiling, enabled=True, tile_size=min(192, tiling.tile_size))
+        options = BackendOptions(
+            precision=job.precision, low_vram=job.low_vram if job.memory_profile != "fast" else False,
+            clear_cache=job.clear_cache, tiling=tiling, cfg_scale=job.cfg_scale,
+            cfg_rescale=job.cfg_rescale, cond_noise_scale=job.cond_noise_scale, color_fix=job.color_fix,
+        )
+        self._backend = self._backend_factory(job.backend_name, options, job.model.path.parent)
+        self._backend.load(job.model, log=self._log)
+        memory_key = apply_auto_profile(self._backend, job, self._log)
         io_pool = ThreadPoolExecutor(max_workers=2) if job.parallel_io else None
-        pending_saves: list[Future] = []
+        outcomes: list[ImageOutcome] = []
         reserved: set[str] = set()
         self._set_state(RunnerState.RUNNING)
-        cancelled = False
 
-        try:
-            for index, src in enumerate(todo):
-                if self._cancel.is_set():
-                    cancelled = True
-                    break
-                self._wait_if_paused()
-                if self._cancel.is_set():
-                    cancelled = True
-                    break
-
-                outcome = self._process_one(src, index, reserved, pending_saves, io_pool)
-                if outcome is None:  # annulation demandée pendant une tuile
-                    cancelled = True
-                    break
-
-                self._register_outcome(outcome, stats, done)
-                self._save_resume(done)
-                self._emit_progress(done_count=stats.succeeded + stats.failed + stats.skipped,
-                                    total_count=len(todo))
-                if job.clear_cache:
-                    self._clear_gpu_cache()
-
-            if self._cancel.is_set():
-                cancelled = True
-        finally:
-            for future in pending_saves:  # écritures en vol : on les termine
+        def commit(outcome):
+            future = self._save_futures.pop(outcome.destination, None)
+            if future is not None:
                 try:
                     future.result()
                 except Exception as exc:
-                    self._log(f"Erreur d'écriture disque : {exc}")
-                    stats.errors.append(f"io: {exc}")
-            if io_pool is not None:
-                io_pool.shutdown(wait=True)
-            try:
-                self._backend.unload()
-            except Exception as exc:  # pragma: no cover - best effort
-                self._log(f"Avertissement unload : {exc}")
+                    outcome.ok = False
+                    outcome.error = f"Écriture disque : {exc}"
+                    self._log(f"{outcome.source.name} : {outcome.error}")
+            if outcome.ok and not outcome.skipped:
+                self.bus.put("result", source=str(outcome.source), destination=str(outcome.destination),
+                             crop=self.job.crop)
+            self._register_outcome(outcome, stats, done)
+            self._save_resume(done)
+            self._emit_progress(stats.succeeded + stats.failed + stats.skipped, stats.total)
 
-        self._set_state(RunnerState.FINISHED if not cancelled else RunnerState.CANCELLING)
-        self._log("Traitement annulé par l'utilisateur." if cancelled
-                  else "Traitement terminé.")
+        try:
+            for src in todo:
+                if self._gate():
+                    break
+                outcome = self._process_one(src, reserved, io_pool)
+                if outcome is None:
+                    break
+                outcomes.append(outcome)
+                if len(outcomes) >= _MAX_PARALLEL_SAVES:
+                    commit(outcomes.pop(0))
+                if job.clear_cache:
+                    self._clear_gpu_cache()
+        finally:
+            try:
+                for outcome in outcomes:
+                    commit(outcome)
+            finally:
+                if io_pool:
+                    io_pool.shutdown(wait=True)
+        if stats.succeeded:
+            remember_profile(memory_key, self._backend.options.tiling.tile_size)
+        self._set_state(RunnerState.CANCELLING if self._cancel.is_set() else RunnerState.FINISHED)
+        self._log("Traitement annulé." if self._cancel.is_set() else "Traitement terminé.")
 
     # ----------------------------------------------------------- une image
     def _process_one(
         self,
         src: Path,
-        index: int,
         reserved: set[str],
-        pending_saves: list[Future],
         io_pool: ThreadPoolExecutor | None,
     ) -> ImageOutcome | None:
         """Charge, u upscale, sauvegarde. None = annulation en cours de tuiles."""
@@ -285,7 +333,7 @@ class BatchRunner:
         # Format effectif : « Comme l'entrée » conserve extension ET format.
         out_format, out_ext = format_for_source(src, job.output_format)
         stem = apply_suffix(src.stem, job.suffix, job.add_suffix)
-        dest = resolve_output_path(job.output_dir, f"{stem}{out_ext}",
+        dest = resolve_output_path(job.output_dir / src.relative_to(job.input_dir.resolve()).parent, f"{stem}{out_ext}",
                                    job.conflict_policy, _reserved=reserved)
         if dest is None:
             self._log(f"{src.name} : ignoré (fichier de sortie déjà présent).")
@@ -296,7 +344,10 @@ class BatchRunner:
             from .images import load_image
 
             loaded = load_image(src)
-            seed_img = job.seed + index  # graine déterministe par image
+            if job.crop:
+                x, y, w, h = job.crop
+                loaded.image = loaded.image.crop((x, y, x + w, y + h))
+            seed_img = self._seed(src)
             result = self._backend.upscale(
                 loaded.image, job.scale, seed_img, log=self._log,
                 should_abort=self._gate, tile_cb=self._tile_cb,
@@ -304,20 +355,24 @@ class BatchRunner:
         except InterruptedError:
             return None
         except Exception as exc:
-            if self._is_oom(exc) and not self._backend.options.tiling.enabled:
-                self._log(f"VRAM insuffisante sur {src.name} — nouvel essai avec tuilage.")
-                self._enable_tiling_fallback()
-                self._clear_gpu_cache()
-                try:
-                    from .images import load_image
-
-                    loaded = load_image(src)
-                    result = self._backend.upscale(loaded.image, job.scale,
-                                                   job.seed + index, log=self._log,
-                                                   should_abort=self._gate,
-                                                   tile_cb=self._tile_cb)
-                except Exception as exc2:
-                    return self._fail(src, exc2, started)
+            if self._is_oom(exc):
+                exc.__traceback__ = None  # release failed inference tensors before retry
+                result = None
+                while self._reduce_tiles():
+                    self._clear_gpu_cache()
+                    try:
+                        result = self._backend.upscale(loaded.image, job.scale, self._seed(src),
+                            log=self._log, should_abort=self._gate, tile_cb=self._tile_cb)
+                        break
+                    except InterruptedError:
+                        return None
+                    except Exception as retry_exc:
+                        if not self._is_oom(retry_exc):
+                            return self._fail(src, retry_exc, started)
+                        retry_exc.__traceback__ = None
+                        exc = retry_exc
+                if result is None:
+                    return self._fail(src, exc, started)
             else:
                 return self._fail(src, exc, started)
 
@@ -330,9 +385,12 @@ class BatchRunner:
         after_thumb = self._thumbnail(result)
         self.bus.preview(before_thumb, after_thumb)
 
-        self._enqueue_save(pending_saves, io_pool, result, dest, loaded, out_format)
+        try:
+            self._enqueue_save(io_pool, result, dest, loaded, out_format)
+        except Exception as exc:
+            return self._fail(src, exc, started)
         return ImageOutcome(source=src, destination=dest, ok=True,
-                            seconds=time.time() - started)
+                            seconds=time.time() - started, effective_tiling=self._backend.options.tiling)
 
     def _fail(self, src: Path, exc: Exception, started: float) -> ImageOutcome:
         import traceback
@@ -403,7 +461,6 @@ class BatchRunner:
 
     def _enqueue_save(
         self,
-        pending: list[Future],
         io_pool: ThreadPoolExecutor | None,
         result,
         dest: Path,
@@ -416,12 +473,10 @@ class BatchRunner:
             save_image(result, dest, out_format, job.quality,
                        loaded.exif_bytes, loaded.icc_profile)
             return
-        while len(pending) >= _MAX_PARALLEL_SAVES:  # borne la RAM retenue
-            pending.pop(0).result()
-        pending.append(io_pool.submit(
+        self._save_futures[dest] = io_pool.submit(
             save_image, result, dest, out_format, job.quality,
             loaded.exif_bytes, loaded.icc_profile,
-        ))
+        )
 
     # ------------------------------------------------------------- helpers
     @staticmethod
@@ -446,13 +501,18 @@ class BatchRunner:
         text = str(exc).lower()
         return "out of memory" in text or "cuda oom" in text
 
-    def _enable_tiling_fallback(self) -> None:
-        backend = self._backend
-        backend.options = dataclasses.replace(
-            backend.options,
-            tiling=dataclasses.replace(backend.options.tiling, enabled=True),
-        )
-        self._log("Tuilage activé automatiquement pour la suite du lot.")
+    def _reduce_tiles(self) -> bool:
+        from .backend.base import MAX_TILE_OUT_SIDE
+        tiling = self._backend.options.tiling
+        effective = max(64, min(tiling.tile_size, int(MAX_TILE_OUT_SIDE / self.job.scale)))
+        if tiling.enabled and effective <= 64:
+            return False
+        size = max(64, effective // 2) if tiling.enabled else effective
+        self._backend.options = dataclasses.replace(self._backend.options,
+            tiling=dataclasses.replace(tiling, enabled=True, tile_size=size,
+                                       overlap=min(tiling.overlap, size // 2)))
+        self._log(f"Repli mémoire : tuiles de {size} px.")
+        return True
 
     @staticmethod
     def _clear_gpu_cache() -> None:
@@ -470,15 +530,25 @@ class BatchRunner:
         if outcome.ok and not outcome.skipped:
             stats.succeeded += 1
             self._durations.append(outcome.seconds)
-            done.append(outcome.source.name)
+            done.append(self._key(outcome.source))
         elif outcome.skipped:
             stats.skipped += 1
-            done.append(outcome.source.name)
+            done.append(self._key(outcome.source))
         else:
             stats.failed += 1
             stats.errors.append(f"{outcome.source.name}: {outcome.error}")
             # Les échecs ne sont pas marqués « done » : ils seront retentés
             # à la prochaine reprise.
+
+        key = self._key(outcome.source)
+        self._records[key] = {
+            "status": "skipped" if outcome.skipped else "done" if outcome.ok else "failed",
+            "source": self._signature(outcome.source), "seed": self._seed(outcome.source),
+            "destination": str(outcome.destination.resolve()) if outcome.destination else None,
+            "output": self._signature(outcome.destination) if outcome.destination and outcome.ok else None,
+            "error": outcome.error,
+            "effective_tiling": dataclasses.asdict(outcome.effective_tiling) if outcome.effective_tiling else None,
+        }
 
     def _emit_progress(self, done_count: int, total_count: int) -> None:
         recent = self._durations[-_ETA_WINDOW:]
@@ -491,40 +561,56 @@ class BatchRunner:
     def _resume_path(self) -> Path:
         return self.job.output_dir / RESUME_FILENAME
 
+    def _key(self, source: Path) -> str:
+        return source.resolve().relative_to(self.job.input_dir.resolve()).as_posix()
+
+    def _seed(self, source: Path) -> int:
+        digest = hashlib.sha256(self._key(source).encode()).digest()
+        return (self.job.seed + int.from_bytes(digest[:4], "big")) % (2**32)
+
+    @staticmethod
+    def _signature(path: Path | None):
+        if path is None or not path.is_file():
+            return None
+        stat = path.stat()
+        return {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
     def _config_fingerprint(self) -> str:
-        job = self.job
-        payload = (
-            f"{job.scale}|{job.model.path.name}|{job.output_format.value}|"
-            f"{job.quality}|{job.add_suffix}:{job.suffix}"
-        )
-        return hashlib.sha1(payload.encode()).hexdigest()[:12]
+        payload = serialize_job(self.job)
+        for name in ("resume", "retry_failed", "parallel_io", "input_files", "conflict_policy"):
+            payload.pop(name, None)
+        payload["input_dir"] = str(self.job.input_dir.resolve())
+        payload["model_signature"] = self._signature(self.job.model.path)
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
     def _load_resume(self, files: list[Path]) -> list[str]:
         path = self._resume_path()
-        if not (self.job.resume and path.exists()):
+        if not ((self.job.resume or self.job.retry_failed) and path.exists()):
             return []
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
             if payload.get("fingerprint") != self._config_fingerprint():
-                self._log("État de reprise ignoré : configuration différente.")
+                self._log("État de reprise ignoré : configuration différente ou ancien format.")
                 return []
-            names = {p.name for p in files}
-            return [n for n in payload.get("done", []) if n in names]
-        except Exception as exc:
-            self._log(f"État de reprise illisible ({exc}), nouveau départ.")
+            self._records = payload.get("records", {})
+            done = []
+            for source in files:
+                key = self._key(source)
+                entry = self._records.get(key, {})
+                dest = Path(entry["destination"]) if entry.get("destination") else None
+                if (entry.get("status") == "done" and entry.get("source") == self._signature(source)
+                        and dest and self._signature(dest) is not None
+                        and entry.get("output") == self._signature(dest)):
+                    done.append(key)
+            return done
+        except (OSError, ValueError, TypeError) as exc:
+            self._log(f"Reprise illisible : {exc}")
             return []
 
     def _save_resume(self, done: list[str]) -> None:
-        if not self.job.resume:
-            return
-        try:
-            self._resume_path().write_text(
-                json.dumps({"fingerprint": self._config_fingerprint(), "done": done},
-                           ensure_ascii=False),
-                encoding="utf-8",
-            )
-        except Exception:
-            pass  # la reprise est un confort, jamais un point de blocage
+        if self.job.resume or self.job.retry_failed:
+            atomic_json(self._resume_path(), {"version": 2,
+                "fingerprint": self._config_fingerprint(), "records": self._records})
 
     # ------------------------------------------------------------ finalisation
     def _finalize(self, stats: BatchStats) -> None:
@@ -533,14 +619,19 @@ class BatchRunner:
             stats.avg_seconds_per_image = sum(self._durations) / len(self._durations)
         try:
             self.job.output_dir.mkdir(parents=True, exist_ok=True)
-            self._write_log_file()
+            if not self._log_handle:
+                self._write_log_file()
+            if self._journal_error:
+                stats.errors.append(f"journal: {self._journal_error}")
             if stats.total:
                 self._write_report(stats)
                 self._notify_done()
-            # Lot achevé sans erreur bloquante : l'état de reprise n'a plus lieu d'être.
-            if self._state is RunnerState.FINISHED:
-                self._resume_path().unlink(missing_ok=True)
+            atomic_json(self.job.output_dir / ".seedvr2_history" /
+                        (datetime.now().strftime("%Y%m%d-%H%M%S-%f") + ".json"),
+                        {"config": serialize_job(self.job), "stats": dataclasses.asdict(stats),
+                         "state": self._state.value, "records": self._records})
         except Exception as exc:
+            stats.errors.append(f"finalisation: {exc}")
             self.bus.log(f"Impossible d'écrire log/rapport : {exc}")
 
     def _write_log_file(self) -> None:

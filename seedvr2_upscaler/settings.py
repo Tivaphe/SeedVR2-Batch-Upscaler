@@ -37,6 +37,9 @@ class Settings:
     parallel_io: bool = True
     resume: bool = True
     backend: str = "auto"             # auto | official
+    recursive: bool = False
+    memory_profile: str = "auto"
+    retry_failed: bool = False
     language: str = "fr"              # langue de l'interface : fr | en
     # --- Réglages avancés natifs du pipeline officiel ---
     cfg_scale: float = 1.0            # guidage diffusion (1.0 = officiel ; > 1 accentue)
@@ -69,6 +72,8 @@ class Settings:
         # « demo » (backend supprimé) : on le neutralise silencieusement.
         if self.backend not in {"auto", "official"}:
             self.backend = "auto"
+        if self.memory_profile not in {"auto", "eco", "balanced", "fast"}:
+            self.memory_profile = "auto"
         if self.language not in {"fr", "en"}:
             self.language = "fr"
         # Garde-fous des réglages avancés (bornes larges mais sûres — un
@@ -107,9 +112,7 @@ def load_settings(path: Path = SETTINGS_PATH) -> Settings:
 def save_settings(settings: Settings, path: Path = SETTINGS_PATH) -> None:
     """Écrit les paramètres (atomique au possible, discret en cas d'échec)."""
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(settings.to_json(), encoding="utf-8")
-        tmp.replace(path)
+        from .jobs import atomic_json
+        atomic_json(path, asdict(settings))
     except Exception:
         pass
